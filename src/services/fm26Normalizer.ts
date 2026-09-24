@@ -787,6 +787,7 @@ export function parseMonetaryBRL(value: unknown, fallback = 0): number {
     .replace(/[rR]\$/g, '')
     .replace(/[€$£¥]/g, '')
     .replace(/[a-zA-Z]/g, '')
+    .replace(/\s+/g, '')
     .trim();
 
   if (!numStr || numStr === '-') return fallback;
@@ -1095,18 +1096,19 @@ export function deriveAttributesFromFM20(
   }
 
   if (isGK) {
-    const pace = scale20To99(phys.acceleration ?? phys.pace, overall - 15);
+    const defaultGKRating = overall > 0 ? overall : 75;
+    const pace = Math.max(1, scale20To99(phys.acceleration ?? phys.pace, Math.max(20, defaultGKRating - 15)));
     const shooting = scale20To99(gk.kicking, 50);
     const passing = scale20To99(gk.throwing ?? tech.passing, 55);
     const dribbling = scale20To99(tech.firstTouch, 45);
     const defending = Math.round(
-      scale20To99(gk.reflexes, overall) * 0.4 +
-      scale20To99(gk.handling, overall) * 0.3 +
-      scale20To99(gk.oneOnOnes, overall) * 0.3
+      scale20To99(gk.reflexes, defaultGKRating) * 0.4 +
+      scale20To99(gk.handling, defaultGKRating) * 0.3 +
+      scale20To99(gk.oneOnOnes ?? gk.commandOfArea ?? gk.aerialReach, defaultGKRating) * 0.3
     );
     const physical = Math.round(
-      scale20To99(phys.strength, overall) * 0.5 +
-      scale20To99(phys.jumpingReach, overall) * 0.5
+      scale20To99(phys.strength, defaultGKRating) * 0.5 +
+      scale20To99(phys.jumpingReach ?? gk.aerialReach, defaultGKRating) * 0.5
     );
     return { pace, shooting, passing, dribbling, defending, physical };
   }
@@ -1176,7 +1178,11 @@ export function normalizePlayerRow(
   for (const [rawKey, val] of Object.entries(rawRecord)) {
     const canonicalKey = mapCanonicalField(rawKey);
     if (canonicalKey && val !== undefined && val !== null) {
-      mapped[canonicalKey] = cleanText(val);
+      const cleaned = cleanText(val);
+      // Preserva valor já mapeado não vazio se o novo for vazio
+      if (cleaned || !mapped[canonicalKey]) {
+        mapped[canonicalKey] = cleaned;
+      }
     }
   }
 
@@ -1299,9 +1305,33 @@ export function normalizePlayerRow(
     marketValue = 1_000_000;
   }
 
-  // O salário não existe no CSV atual; não atribua R$50.000 a todos os jogadores.
-  // Deixe salário como 0/ausente até termos uma fonte real.
-  const rawWageStr = mapped.wage || '';
+  // 7. Salário e Cláusula Rescisória
+  // Reconhece a coluna "salario", "salário", "wage", "salary" ou qualquer variação do CSV (ex: salario = 50000 -> wage: 50000)
+  let rawWageStr = mapped.wage || '';
+  if (!rawWageStr) {
+    for (const [k, v] of Object.entries(rawRecord)) {
+      const nk = normalizeHeaderKey(k);
+      if (
+        nk === 'wage' ||
+        nk === 'salario' ||
+        nk.startsWith('salari') ||
+        nk.includes('salari') ||
+        nk.startsWith('wage') ||
+        nk.includes('wage') ||
+        nk.startsWith('salary') ||
+        nk.includes('salary') ||
+        nk.includes('remuner') ||
+        nk.includes('ordenad') ||
+        nk.includes('venciment')
+      ) {
+        const cleaned = cleanText(v);
+        if (cleaned) {
+          rawWageStr = cleaned;
+          break;
+        }
+      }
+    }
+  }
   let wage = parseMonetaryBRL(rawWageStr, 0);
 
   // Reconhece formato semanal (p/w, /w, weekly) ou anual na própria coluna Wage se informada
@@ -1497,6 +1527,8 @@ export function normalizePlayerRow(
     marketValue,
     saleValue,
     wage,
+    salary: wage,
+    salario: wage,
     currency: 'BRL',
     contractUntil: parseDateISO(mapped.contractUntil, '2028-12-31'),
     releaseClause,

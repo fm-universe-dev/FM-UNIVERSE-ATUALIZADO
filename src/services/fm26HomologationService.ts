@@ -6,7 +6,7 @@ import {
   FM26CommitResult,
   FM26ImportAuditRecord,
 } from '../types/fm26';
-import { cleanText } from './fm26Normalizer';
+import { cleanText, parseMonetaryBRL } from './fm26Normalizer';
 import { jogadoresService } from './jogadoresService';
 import { clubesService } from './clubesService';
 import { fm26AuditService } from './fm26AuditService';
@@ -225,6 +225,22 @@ export const fm26HomologationService = {
       if (p.externalId && p.externalId.trim()) {
         existingByExtId.set(p.externalId.trim().toLowerCase(), p);
       }
+      if (p.uniqueId && String(p.uniqueId).trim()) {
+        existingByExtId.set(String(p.uniqueId).trim().toLowerCase(), p);
+      }
+      if (p.id && p.id.startsWith('fm2008_')) {
+        existingByExtId.set(p.id.replace('fm2008_', '').trim().toLowerCase(), p);
+      }
+    }
+
+    const existingByName = new Map<string, Player>();
+    for (const p of existingPlayers) {
+      if (p.name) {
+        existingByName.set(cleanText(p.name).toLowerCase(), p);
+      }
+      if (p.fullName && p.fullName !== p.name) {
+        existingByName.set(cleanText(p.fullName).toLowerCase(), p);
+      }
     }
 
     // Determina o intervalo do lote baseado no checkpoint e no arquivo
@@ -292,6 +308,32 @@ export const fm26HomologationService = {
         parsed.age < 12 ||
         parsed.overall < 1;
 
+      // Garante resolução de salário para a homologação
+      const effectiveWage =
+        parsed.wage ||
+        parsed.salary ||
+        parsed.salario ||
+        (parsed as any)?.rawRecord?.salario ||
+        (parsed as any)?.rawRecord?.Salario ||
+        (parsed as any)?.rawRecord?.SALARIO ||
+        (parsed as any)?.rawRecord?.SALÁRIO ||
+        (parsed as any)?.rawRecord?.['Salário'] ||
+        (parsed as any)?.rawRecord?.['salário'] ||
+        (parsed as any)?.rawRecord?.wage ||
+        (parsed as any)?.rawRecord?.Wage ||
+        0;
+
+      const resolvedWageNum =
+        typeof effectiveWage === 'number'
+          ? effectiveWage
+          : parseMonetaryBRL(effectiveWage, 0);
+
+      if (resolvedWageNum > 0 && !parsed.wage) {
+        parsed.wage = resolvedWageNum;
+        parsed.salary = resolvedWageNum;
+        parsed.salario = resolvedWageNum;
+      }
+
       if (isInvalid) {
         totalInvalid++;
         items.push({
@@ -302,6 +344,9 @@ export const fm26HomologationService = {
           comparisonKey: '',
           selected: false,
           canSelect: false,
+          wage: resolvedWageNum,
+          salary: resolvedWageNum,
+          salario: resolvedWageNum,
           issues: ['Nome em branco ou atributos corrompidos.'],
         });
         continue;
@@ -321,6 +366,9 @@ export const fm26HomologationService = {
           comparisonKey: key,
           selected: false,
           canSelect: false,
+          wage: resolvedWageNum,
+          salary: resolvedWageNum,
+          salario: resolvedWageNum,
           issues: [`Mesmo nome, clube e nacionalidade da linha ${origRow}.`],
         });
         continue;
@@ -354,6 +402,27 @@ export const fm26HomologationService = {
           existingMap.get(key);
       }
 
+      // Resolução de salário: se ausente/0 no CSV, busca na base FM2008 disponível por uniqueId/ID do FM2008
+      let finalWage = resolvedWageNum;
+      if ((!finalWage || finalWage === 0) && isFM2008) {
+        const rawUid = parsed.uniqueId || parsed.sourceUniqueId || parsed.externalId || (parsed.id?.startsWith('fm2008_') ? parsed.id.replace('fm2008_', '') : '');
+        const cleanUid = String(rawUid || '').trim().toLowerCase();
+        const candidateForSalary =
+          (cleanUid ? existingByExtId.get(cleanUid) : undefined) ||
+          existingById.get(deterministicId.toLowerCase()) ||
+          (cleanUid ? existingById.get(`fm2008_${cleanUid}`) : undefined);
+
+        if (candidateForSalary && typeof candidateForSalary.wage === 'number' && candidateForSalary.wage > 0) {
+          finalWage = candidateForSalary.wage;
+        }
+      }
+
+      if (finalWage > 0) {
+        parsed.wage = finalWage;
+        parsed.salary = finalWage;
+        parsed.salario = finalWage;
+      }
+
       if (existing) {
         totalUpdate++;
         items.push({
@@ -366,6 +435,9 @@ export const fm26HomologationService = {
           comparisonKey: key,
           selected: false,
           canSelect: false,
+          wage: finalWage || existing.wage || 0,
+          salary: finalWage || existing.wage || 0,
+          salario: finalWage || existing.wage || 0,
           issues: ['Atleta já existente no banco de dados. Preservado 100% intacto sem alteração.'],
         });
       } else {
@@ -385,6 +457,9 @@ export const fm26HomologationService = {
             comparisonKey: key,
             selected: true,
             canSelect: true,
+            wage: finalWage || 0,
+            salary: finalWage || 0,
+            salario: finalWage || 0,
             issues: [],
           });
         } else if (isBeforeBatch) {
@@ -396,6 +471,9 @@ export const fm26HomologationService = {
             comparisonKey: key,
             selected: false,
             canSelect: false,
+            wage: finalWage || 0,
+            salary: finalWage || 0,
+            salario: finalWage || 0,
             issues: [],
           });
         } else {
@@ -407,6 +485,9 @@ export const fm26HomologationService = {
             comparisonKey: key,
             selected: false,
             canSelect: false,
+            wage: finalWage || 0,
+            salary: finalWage || 0,
+            salario: finalWage || 0,
             issues: [],
           });
         }
@@ -414,6 +495,17 @@ export const fm26HomologationService = {
     }
 
     const totalSelectedToRecord = items.filter((i) => i.selected && i.canSelect).length;
+
+    let totalWithSalary = 0;
+    let totalWithoutSalary = 0;
+    for (const item of items) {
+      const w = item.wage || (item as any).salary || (item as any).salario || item.parsedPlayer?.wage || 0;
+      if (w > 0) {
+        totalWithSalary++;
+      } else {
+        totalWithoutSalary++;
+      }
+    }
 
     return {
       totalFound: parsedPlayers.length,
@@ -424,6 +516,8 @@ export const fm26HomologationService = {
       totalProtected: totalUpdate,
       totalDuplicate,
       totalSelectedToRecord,
+      totalWithSalary,
+      totalWithoutSalary,
       items,
     };
   },

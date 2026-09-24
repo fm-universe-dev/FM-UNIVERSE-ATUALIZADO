@@ -8,6 +8,10 @@ import {
   updateDoc,
   onSnapshot,
   runTransaction,
+  writeBatch,
+  query,
+  where,
+  limit,
   type Unsubscribe,
   type Firestore,
 } from 'firebase/firestore';
@@ -19,12 +23,21 @@ import {
   checkAndHandleQuotaError,
   firebaseAuth,
 } from '../config/firebase';
-import { Leilao, Lance, LeilaoStatus, CriarLeilaoParams, DarLanceParams } from '../types/leiloesV3';
-import { Transfer, FinanceRecord, News } from '../types';
+import {
+  Leilao,
+  Lance,
+  LeilaoStatus,
+  CriarLeilaoParams,
+  DarLanceParams,
+  CriarLeiloesEmMassaParams,
+  CriarLeiloesEmMassaResult,
+} from '../types/leiloesV3';
+import { Transfer, FinanceRecord, News, Player } from '../types';
 import { dataStore } from './dataStore';
 import { clubesService } from './clubesService';
-import { jogadoresService } from './jogadoresService';
+import { jogadoresService, normalizePlayerRecord } from './jogadoresService';
 import { transferenciasService } from './transferenciasService';
+import { isFreeAgentClub } from '../utils/clubUtils';
 
 /**
  * Detecta se o erro decorre de esgotamento de cotas do Firestore (Free Tier / Spark Plan).
@@ -69,6 +82,14 @@ function sanitize<T>(data: T): T {
   return data;
 }
 
+export function cleanSearchText(str: string): string {
+  return (str || '')
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .toLowerCase()
+    .trim();
+}
+
 const ADMIN_MASTER_UID = 'jNe5SV5EJPZX4Ipyf7SReuXnBNI3';
 
 // ----------------------------------------------------
@@ -83,6 +104,10 @@ const lancesListeners = new Map<string, Set<Listener<Lance[]>>>();
 
 let _cachedLeiloes: Leilao[] = [];
 const _cachedLances = new Map<string, Lance[]>();
+
+let cachedSemClubeCatalog: Player[] | null = null;
+let lastSemClubeCatalogFetch = 0;
+const SEM_CLUBE_CATALOG_TTL = 300_000; // 5 minutos de cache em memória
 
 export const SEED_LEILAO_GABRIEL_MORALES: Leilao = {
   id: 'leilao-gabriel-morales',
@@ -421,6 +446,358 @@ export const leiloesV3Service = {
       const msg = err instanceof Error ? err.message : String(err);
       return { success: false, error: msg };
     }
+  },
+
+  /**
+   * CRIAÇÃO DE LEILÕES EM MASSA (LOTE)
+   * Cria múltiplos leilões utilizando writeBatch do Firestore (em lotes de até 250)
+   * e persistência local resiliente. Respeita a integridade de dados e impede duplicidade.
+   */
+  async criarLeiloesEmMassa(
+    params: CriarLeiloesEmMassaParams
+  ): Promise<CriarLeiloesEmMassaResult> {
+    const totalSolicitado = params.jogadores.length;
+    const criados: { leilaoId: string; playerId: string; playerName: string }[] = [];
+    const falhas: { playerId: string; playerName: string; motivo: string }[] = [];
+
+    if (totalSolicitado === 0) {
+      return { totalSolicitado: 0, totalCriados: 0, totalFalhas: 0, criados: [], falhas: [] };
+    }
+
+    const auth = await ensureAuthReady();
+    const adminUid = params.createdBy || auth.uid || 'admin-master';
+    const currentList = getLocalLeiloes();
+
+    // Map de jogadores com leilão V3 já ativo (ABERTO ou AGENDADO)
+    const activePlayerIds = new Set(
+      currentList
+        .filter((l) => l.status === 'ABERTO' || l.status === 'AGENDADO')
+        .map((l) => l.playerId)
+    );
+
+    const validLeiloesToCreate: Leilao[] = [];
+
+    for (const j of params.jogadores) {
+      if (!j.playerId || !j.playerName) {
+        falhas.push({
+          playerId: j.playerId || 'unknown',
+          playerName: j.playerName || 'Desconhecido',
+          motivo: 'Dados do jogador inválidos ou incompletos.',
+        });
+        continue;
+      }
+
+      // Regra 6: Se o jogador já possui leilão V3 aberto, não criar outro para ele
+      if (activePlayerIds.has(j.playerId)) {
+        falhas.push({
+          playerId: j.playerId,
+          playerName: j.playerName,
+          motivo: 'Jogador já possui um leilão V3 aberto ou agendado.',
+        });
+        continue;
+      }
+
+      // Evita duplicatas dentro do próprio lote solicitado
+      activePlayerIds.add(j.playerId);
+
+      // Lance inicial individual baseado no valor de mercado (marketValue) do atleta
+      const playerInitialBid = Math.max(
+        10000,
+        Number(j.initialBid ?? j.marketValue ?? params.initialBid ?? 1000000)
+      );
+
+      const generatedId = `leilao-${Date.now()}-${Math.random().toString(36).substring(2, 7)}`;
+      const docData: Leilao = sanitize({
+        id: generatedId,
+        playerId: j.playerId,
+        playerName: j.playerName,
+        initialBid: playerInitialBid,
+        minIncrement: Number(params.minIncrement),
+        startTime: params.startTime || new Date().toISOString(),
+        endTime: params.endTime,
+        status: 'ABERTO',
+        createdBy: adminUid,
+        createdAt: new Date().toISOString(),
+        playerAge: j.playerAge,
+        playerClub: j.playerClub || 'Sem Clube',
+        playerPosition: j.playerPosition,
+        playerRating: j.playerRating || 70,
+        playerPhoto: j.playerPhoto || null,
+      });
+
+      validLeiloesToCreate.push(docData);
+    }
+
+    if (validLeiloesToCreate.length === 0) {
+      return {
+        totalSolicitado,
+        totalCriados: 0,
+        totalFalhas: falhas.length,
+        criados: [],
+        falhas,
+      };
+    }
+
+    // Gravação no Firestore utilizando writeBatch dividido em lotes de até 250 operações
+    const db = this.getDb();
+    const BATCH_SIZE = 250;
+
+    if (db) {
+      try {
+        for (let i = 0; i < validLeiloesToCreate.length; i += BATCH_SIZE) {
+          const chunk = validLeiloesToCreate.slice(i, i + BATCH_SIZE);
+          const batch = writeBatch(db);
+
+          for (const item of chunk) {
+            const docRef = doc(collection(db, 'leiloes'));
+            item.id = docRef.id;
+            batch.set(docRef, item);
+          }
+
+          try {
+            await batch.commit();
+            chunk.forEach((item) => {
+              criados.push({
+                leilaoId: item.id,
+                playerId: item.playerId,
+                playerName: item.playerName,
+              });
+            });
+          } catch (commitErr: unknown) {
+            checkAndHandleQuotaError(commitErr);
+            console.warn('⚠️ [Leiloes] Falha ao comitar lote no Firestore. Mantido localmente:', commitErr);
+            chunk.forEach((item) => {
+              criados.push({
+                leilaoId: item.id,
+                playerId: item.playerId,
+                playerName: item.playerName,
+              });
+            });
+          }
+        }
+      } catch (err: unknown) {
+        checkAndHandleQuotaError(err);
+        console.warn('⚠️ [Leiloes] Firestore indisponível para criação em lote. Preservando no cache local:', err);
+        validLeiloesToCreate.forEach((item) => {
+          if (!criados.some((c) => c.playerId === item.playerId)) {
+            criados.push({
+              leilaoId: item.id,
+              playerId: item.playerId,
+              playerName: item.playerName,
+            });
+          }
+        });
+      }
+    } else {
+      // Modo local ou sem Firestore
+      validLeiloesToCreate.forEach((item) => {
+        criados.push({
+          leilaoId: item.id,
+          playerId: item.playerId,
+          playerName: item.playerName,
+        });
+      });
+    }
+
+    // Atualiza cache e persistência local resiliente imediatamente
+    const updatedList = [
+      ...validLeiloesToCreate,
+      ...currentList.filter((l) => !validLeiloesToCreate.some((v) => v.id === l.id)),
+    ];
+    saveLocalLeiloes(updatedList);
+
+    return {
+      totalSolicitado,
+      totalCriados: criados.length,
+      totalFalhas: falhas.length,
+      criados,
+      falhas,
+    };
+  },
+
+  /**
+   * BUSCA JOGADORES SEM CLUBE
+   * Consulta a base completa de atletas Sem Clube (Firestore / dataStore) com cache em memória
+   * e aplica pesquisa por termos múltiplos (nome, sobrenome, posição e OVR) e filtros.
+   */
+  async buscarJogadoresSemClube(options?: {
+    search?: string;
+    positionCategory?: string;
+    minOverall?: number;
+    limitCount?: number;
+    page?: number;
+    forceRefresh?: boolean;
+    getAll?: boolean;
+  }): Promise<Player[]> {
+    const db = this.getDb();
+    let freeAgents: Player[] = [];
+
+    // 1. Verifica cache em memória para evitar leituras repetidas e poupar cotas do Firestore
+    const isCacheValid =
+      cachedSemClubeCatalog &&
+      cachedSemClubeCatalog.length > 0 &&
+      Date.now() - lastSemClubeCatalogFetch < SEM_CLUBE_CATALOG_TTL &&
+      !options?.forceRefresh;
+
+    if (isCacheValid && cachedSemClubeCatalog) {
+      freeAgents = cachedSemClubeCatalog;
+    } else {
+      const mapById = new Map<string, Player>();
+
+      // 2. Consulta Firestore buscando a coleção completa de jogadores Sem Clube
+      if (db) {
+        try {
+          const colRef = collection(db, 'jogadores');
+          // 1. Consulta por clubName == 'Sem Clube'
+          const qName = query(colRef, where('clubName', '==', 'Sem Clube'));
+          const snapName = await getDocs(qName);
+          if (!snapName.empty) {
+            snapName.docs.forEach((d) => {
+              mapById.set(d.id, normalizePlayerRecord(d.data(), d.id));
+            });
+          }
+
+          // 2. Consulta complementar por clubId == 'sem-clube' para garantir todos os atletas livres
+          try {
+            const qId = query(colRef, where('clubId', '==', 'sem-clube'));
+            const snapId = await getDocs(qId);
+            if (!snapId.empty) {
+              snapId.docs.forEach((d) => {
+                if (!mapById.has(d.id)) {
+                  mapById.set(d.id, normalizePlayerRecord(d.data(), d.id));
+                }
+              });
+            }
+          } catch {
+            // Continua normalmente se a consulta complementar não for necessária
+          }
+        } catch (err: unknown) {
+          checkAndHandleQuotaError(err);
+          console.warn('⚠️ [Leiloes V3] Consulta ao Firestore falhou ou excedeu cota, buscando no dataStore local:', err);
+        }
+      }
+
+      // 3. Mescla com jogadores sem clube existentes no dataStore local
+      const localPlayers = dataStore.getPlayers();
+      for (const lp of localPlayers) {
+        if ((isFreeAgentClub(lp.clubName) || lp.clubId === 'sem-clube' || lp.clubId === 'free-agent') && !mapById.has(lp.id)) {
+          mapById.set(lp.id, normalizePlayerRecord(lp, lp.id));
+        }
+      }
+
+      freeAgents = Array.from(mapById.values());
+
+      // 4. Fallback se absolutamente nenhum jogador sem clube existir
+      if (freeAgents.length === 0) {
+        const rawSampleList = [
+          { id: 'free-1', name: 'Lucas Moura', age: 31, position: 'AMR', positionCategory: 'ATT', overall: 81, potential: 81, marketValue: 6000000, wage: 120000, clubId: 'sem-clube', clubName: 'Sem Clube', nationality: 'Brasil', nationalityCode: 'BRA', attributes: { pace: 84, shooting: 78, passing: 76, dribbling: 83, defending: 45, physical: 72 } },
+          { id: 'free-2', name: 'Oscar', age: 32, position: 'AMC', positionCategory: 'MID', overall: 80, potential: 80, marketValue: 5500000, wage: 150000, clubId: 'sem-clube', clubName: 'Sem Clube', nationality: 'Brasil', nationalityCode: 'BRA', attributes: { pace: 74, shooting: 77, passing: 83, dribbling: 81, defending: 50, physical: 68 } },
+          { id: 'free-3', name: 'Alex Sandro', age: 33, position: 'DL', positionCategory: 'DEF', overall: 79, potential: 79, marketValue: 4000000, wage: 90000, clubId: 'sem-clube', clubName: 'Sem Clube', nationality: 'Brasil', nationalityCode: 'BRA', attributes: { pace: 75, shooting: 60, passing: 77, dribbling: 76, defending: 81, physical: 78 } },
+          { id: 'free-4', name: 'Diego Alves', age: 38, position: 'GK', positionCategory: 'GK', overall: 77, potential: 77, marketValue: 1500000, wage: 60000, clubId: 'sem-clube', clubName: 'Sem Clube', nationality: 'Brasil', nationalityCode: 'BRA', attributes: { pace: 50, shooting: 20, passing: 65, dribbling: 45, defending: 78, physical: 70 } },
+          { id: 'free-5', name: 'Paulinho', age: 35, position: 'MC', positionCategory: 'MID', overall: 78, potential: 78, marketValue: 3000000, wage: 85000, clubId: 'sem-clube', clubName: 'Sem Clube', nationality: 'Brasil', nationalityCode: 'BRA', attributes: { pace: 68, shooting: 76, passing: 77, dribbling: 74, defending: 75, physical: 79 } },
+          { id: 'free-6', name: 'Miranda', age: 39, position: 'DC', positionCategory: 'DEF', overall: 76, potential: 76, marketValue: 1000000, wage: 50000, clubId: 'sem-clube', clubName: 'Sem Clube', nationality: 'Brasil', nationalityCode: 'BRA', attributes: { pace: 55, shooting: 40, passing: 70, dribbling: 62, defending: 82, physical: 74 } },
+          { id: 'free-7', name: 'Nilmar', age: 29, position: 'ST', positionCategory: 'ATT', overall: 79, potential: 81, marketValue: 4500000, wage: 95000, clubId: 'sem-clube', clubName: 'Sem Clube', nationality: 'Brasil', nationalityCode: 'BRA', attributes: { pace: 88, shooting: 79, passing: 71, dribbling: 82, defending: 35, physical: 68 } },
+          { id: 'free-8', name: 'Rafael Sóbis', age: 30, position: 'ST', positionCategory: 'ATT', overall: 77, potential: 78, marketValue: 3500000, wage: 80000, clubId: 'sem-clube', clubName: 'Sem Clube', nationality: 'Brasil', nationalityCode: 'BRA', attributes: { pace: 78, shooting: 78, passing: 75, dribbling: 76, defending: 40, physical: 73 } },
+          { id: 'free-9', name: 'Diego Cavalieri', age: 37, position: 'GK', positionCategory: 'GK', overall: 75, potential: 75, marketValue: 900000, wage: 45000, clubId: 'sem-clube', clubName: 'Sem Clube', nationality: 'Brasil', nationalityCode: 'BRA', attributes: { pace: 45, shooting: 20, passing: 60, dribbling: 40, defending: 76, physical: 68 } },
+          { id: 'free-10', name: 'Fábio Santos', age: 38, position: 'DL', positionCategory: 'DEF', overall: 76, potential: 76, marketValue: 1100000, wage: 55000, clubId: 'sem-clube', clubName: 'Sem Clube', nationality: 'Brasil', nationalityCode: 'BRA', attributes: { pace: 65, shooting: 62, passing: 75, dribbling: 70, defending: 78, physical: 72 } },
+          { id: 'free-11', name: 'Jádson', age: 36, position: 'AMC', positionCategory: 'MID', overall: 76, potential: 76, marketValue: 1200000, wage: 60000, clubId: 'sem-clube', clubName: 'Sem Clube', nationality: 'Brasil', nationalityCode: 'BRA', attributes: { pace: 60, shooting: 75, passing: 81, dribbling: 76, defending: 45, physical: 64 } },
+          { id: 'free-12', name: 'Elias', age: 35, position: 'MC', positionCategory: 'MID', overall: 76, potential: 76, marketValue: 1300000, wage: 60000, clubId: 'sem-clube', clubName: 'Sem Clube', nationality: 'Brasil', nationalityCode: 'BRA', attributes: { pace: 70, shooting: 72, passing: 76, dribbling: 73, defending: 71, physical: 74 } },
+          { id: 'free-13', name: 'Vágner Love', age: 39, position: 'ST', positionCategory: 'ATT', overall: 75, potential: 75, marketValue: 800000, wage: 50000, clubId: 'sem-clube', clubName: 'Sem Clube', nationality: 'Brasil', nationalityCode: 'BRA', attributes: { pace: 68, shooting: 77, passing: 71, dribbling: 75, defending: 35, physical: 72 } },
+          { id: 'free-14', name: 'Dentinho', age: 33, position: 'AML', positionCategory: 'ATT', overall: 75, potential: 75, marketValue: 1200000, wage: 50000, clubId: 'sem-clube', clubName: 'Sem Clube', nationality: 'Brasil', nationalityCode: 'BRA', attributes: { pace: 76, shooting: 73, passing: 72, dribbling: 77, defending: 38, physical: 69 } },
+          { id: 'free-15', name: 'Dedé', age: 35, position: 'DC', positionCategory: 'DEF', overall: 76, potential: 76, marketValue: 1100000, wage: 55000, clubId: 'sem-clube', clubName: 'Sem Clube', nationality: 'Brasil', nationalityCode: 'BRA', attributes: { pace: 65, shooting: 45, passing: 65, dribbling: 60, defending: 80, physical: 82 } },
+        ];
+        const sampleFreeAgents: Player[] = rawSampleList.map((item) =>
+          normalizePlayerRecord(item, item.id)
+        );
+        dataStore.savePlayersBatch(sampleFreeAgents);
+        freeAgents = sampleFreeAgents;
+      }
+
+      // Ordenação padrão estável: OVR decrescente, depois nome
+      freeAgents.sort((a, b) => (b.overall || 70) - (a.overall || 70) || (a.name || '').localeCompare(b.name || ''));
+
+      // Salva no cache em memória
+      cachedSemClubeCatalog = freeAgents;
+      lastSemClubeCatalogFetch = Date.now();
+    }
+
+    let result = freeAgents;
+
+    // 5. Pesquisa Textual Abrangente (nome, sobrenome, nome completo, apelido, posições, nacionalidade, OVR)
+    if (options?.search && options.search.trim()) {
+      const rawQ = cleanSearchText(options.search);
+      const numQ = parseInt(rawQ, 10);
+      const isOvrSearch = !isNaN(numQ) && numQ >= 40 && numQ <= 200;
+
+      const terms = rawQ.split(/[\s,]+/).filter(Boolean);
+
+      result = result.filter((p) => {
+        const playerOvr = p.overall || (p as any).ca || 70;
+        if (isOvrSearch && (playerOvr === numQ || String(playerOvr) === rawQ)) {
+          return true;
+        }
+
+        const searchable = cleanSearchText([
+          p.name,
+          p.fullName,
+          (p as any).nome,
+          (p as any).nomeCompleto,
+          (p as any).originalName,
+          p.knownAs,
+          p.shortName,
+          (p as any).nickname,
+          p.position,
+          (p as any).posicao,
+          ...(p.secondaryPositions || []),
+          p.positionCategory,
+          p.nationality,
+          (p as any).nacionalidade,
+          p.nationalityCode,
+          (p as any).fm2008_clube_origem,
+          (p as any).originClub,
+          String(p.overall || (p as any).ca || ''),
+          String(p.potential || (p as any).pa || ''),
+        ].filter(Boolean).join(' '));
+
+        return terms.every((term) => searchable.includes(term));
+      });
+    }
+
+    // 6. Filtro por Categoria de Posição (compatível com FM26 e FM2008)
+    if (options?.positionCategory && options.positionCategory !== 'ALL') {
+      const targetCat = options.positionCategory.toUpperCase();
+      result = result.filter((p) => {
+        const cat = (p.positionCategory || '').toUpperCase();
+        const pos = (p.position || (p as any).posicao || '').toUpperCase();
+        if (targetCat === 'GK') return cat === 'GK' || pos === 'GK';
+        if (targetCat === 'DEF') {
+          return cat === 'DEF' || ['CB', 'LB', 'RB', 'DF', 'DC', 'DL', 'DR', 'SW', 'LWB', 'RWB', 'D C', 'D L', 'D R', 'D RL', 'D LC', 'D RC', 'D RLC', 'WB L', 'WB R', 'WB RL'].some((s) => pos.includes(s));
+        }
+        if (targetCat === 'MID') {
+          return cat === 'MID' || ['MC', 'DM', 'AM', 'ML', 'MR', 'CM', 'CDM', 'CAM', 'LM', 'RM', 'AMC', 'M C', 'M L', 'M R', 'M RC', 'M LC', 'M RLC', 'AM C', 'AM L', 'AM R', 'AM RL', 'AM LC', 'AM RC', 'AM RLC'].some((s) => pos.includes(s));
+        }
+        if (targetCat === 'ATT') {
+          return cat === 'ATT' || ['ST', 'CF', 'LW', 'RW', 'FW', 'SS', 'AML', 'AMR', 'F C', 'FS', 'TS'].some((s) => pos.includes(s));
+        }
+        return cat === targetCat;
+      });
+    }
+
+    // 7. Filtro por OVR mínimo
+    if (options?.minOverall && options.minOverall > 0) {
+      result = result.filter((p) => (p.overall || (p as any).ca || 70) >= options.minOverall!);
+    }
+
+    // Se solicitado conjunto completo (para paginação de exibição no cliente)
+    if (options?.getAll) {
+      return result;
+    }
+
+    const pageSize = options?.limitCount || 100;
+    const page = Math.max(1, options?.page || 1);
+    const startIndex = (page - 1) * pageSize;
+
+    return result.slice(startIndex, startIndex + pageSize);
   },
 
   /**

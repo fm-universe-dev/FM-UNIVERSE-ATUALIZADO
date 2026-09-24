@@ -75,3 +75,32 @@ export interface DarLanceParams {
   clubTransferBudget?: number;
   clubReservedBudget?: number;
 }
+
+export interface CriarLeiloesEmMassaItem {
+  playerId: string;
+  playerName: string;
+  playerAge?: number;
+  playerClub?: string;
+  playerPosition?: string;
+  playerRating?: number;
+  playerPhoto?: string | null;
+  marketValue?: number;
+  initialBid?: number;
+}
+
+export interface CriarLeiloesEmMassaParams {
+  jogadores: CriarLeiloesEmMassaItem[];
+  initialBid?: number;
+  minIncrement: number;
+  startTime?: string;
+  endTime: string;
+  createdBy?: string;
+}
+
+export interface CriarLeiloesEmMassaResult {
+  totalSolicitado: number;
+  totalCriados: number;
+  totalFalhas: number;
+  criados: { leilaoId: string; playerId: string; playerName: string }[];
+  falhas: { playerId: string; playerName: string; motivo: string }[];
+}

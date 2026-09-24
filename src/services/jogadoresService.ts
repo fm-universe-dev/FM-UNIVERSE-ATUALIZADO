@@ -52,23 +52,24 @@ export function sanitizeForFirestore<T>(data: T): T {
  * Normaliza um objeto Player recuperado do Firestore para garantir integridade
  * de campos obrigatórios (stats, attributes, defaults) e prevenir quebras de UI.
  */
-function normalizePlayerRecord(raw: any, id: string): Player {
+export function normalizePlayerRecord(raw: any, id: string): Player {
   const p = { ...raw, id: raw.id || id };
 
   // Garantir valores padrão para campos numéricos e identificadores
   p.jerseyNumber = p.jerseyNumber ?? 0;
-  p.overall = typeof p.overall === 'number' ? p.overall : 70;
-  p.potential = typeof p.potential === 'number' ? p.potential : (p.overall || 70);
-  p.age = typeof p.age === 'number' ? p.age : 22;
-  p.marketValue = typeof p.marketValue === 'number' ? p.marketValue : 1000000;
-  p.wage = typeof p.wage === 'number' ? p.wage : 10000;
-  p.nationalityCode = p.nationalityCode || 'BRA';
-  p.position = p.position || 'MC';
-  p.positionCategory = p.positionCategory || 'MID';
-  p.name = p.name || 'Jogador';
-  p.fullName = p.fullName || p.name;
-  p.clubName = p.clubName || 'Sem Clube';
-  p.clubId = p.clubId || 'free-agent';
+  p.overall = typeof raw.overall === 'number' ? raw.overall : (typeof raw.ca === 'number' ? raw.ca : 70);
+  p.potential = typeof raw.potential === 'number' ? raw.potential : (typeof raw.pa === 'number' ? raw.pa : (p.overall || 70));
+  p.age = typeof raw.age === 'number' ? raw.age : (typeof raw.idade === 'number' ? raw.idade : 22);
+  p.marketValue = typeof raw.marketValue === 'number' ? raw.marketValue : (typeof raw.valor === 'number' ? raw.valor : (typeof raw.valorVenda === 'number' ? raw.valorVenda : 1000000));
+  p.wage = typeof raw.wage === 'number' ? raw.wage : (typeof raw.salario === 'number' ? raw.salario : (typeof raw.salary === 'number' ? raw.salary : 10000));
+  p.nationalityCode = raw.nationalityCode || 'BRA';
+  p.nationality = raw.nationality || raw.nacionalidade || 'Brasil';
+  p.position = raw.position || raw.posicao || 'MC';
+  p.positionCategory = raw.positionCategory || 'MID';
+  p.name = raw.name || raw.nome || raw.shortName || raw.knownAs || 'Jogador';
+  p.fullName = raw.fullName || raw.nomeCompleto || raw.nome || p.name;
+  p.clubName = raw.clubName || raw.clube || 'Sem Clube';
+  p.clubId = raw.clubId || 'free-agent';
   p.contractUntil = p.contractUntil || '2026-12-31';
   p.morale = p.morale || 'Muito Boa';
   p.condition = typeof p.condition === 'number' ? p.condition : 95;

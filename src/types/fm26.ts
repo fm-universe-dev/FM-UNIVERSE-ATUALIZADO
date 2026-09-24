@@ -35,6 +35,8 @@ export interface FM26ParsedPlayer {
   marketValue: number; // Em R$ BRL
   saleValue?: number; // Sale Value (FM Genie Scout) em R$ BRL
   wage: number; // Mensal em R$ BRL (0 se ausente)
+  salary?: number; // Alias para wage
+  salario?: number; // Alias para wage
   currency: string; // Exclusivamente 'BRL'
   contractUntil?: string;
   releaseClause?: number;
@@ -100,6 +102,8 @@ export interface FM26ValidationSummary {
   previewPlayers: FM26ParsedPlayer[];
   allPlayers: FM26ParsedPlayer[];
   databaseSource?: 'FM2008' | 'FM26';
+  totalWithSalary?: number;
+  totalWithoutSalary?: number;
   canImport: boolean;
   isReadyForFutureImport: boolean;
 }
@@ -116,6 +120,9 @@ export interface FM26HomologationItem {
   comparisonKey: string;
   selected: boolean;
   canSelect: boolean;
+  wage?: number;
+  salary?: number;
+  salario?: number;
   issues: string[];
 }
 
@@ -128,6 +135,8 @@ export interface FM26HomologationSummary {
   totalProtected: number;
   totalDuplicate: number;
   totalSelectedToRecord: number;
+  totalWithSalary?: number;
+  totalWithoutSalary?: number;
   items: FM26HomologationItem[];
 }
 

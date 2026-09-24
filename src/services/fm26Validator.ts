@@ -1,5 +1,6 @@
 import { FM26ValidationSummary, FM26ValidationIssue, FM26ParsedPlayer } from '../types/fm26';
 import { mapCanonicalField, normalizePlayerRow, cleanText } from './fm26Normalizer';
+import { dataStore } from './dataStore';
 
 /**
  * Detecta o delimitador CSV mais provável (ponto-e-vírgula ';' ou vírgula ',')
@@ -226,6 +227,29 @@ export function validateCSVContent(
 
     const { player, issues: rowIssues } = normalizePlayerRow(rawRecord, rowNumber, resolvedSource);
 
+    // Se o salário estiver ausente/0 no CSV e for FM2008, busca na base FM2008 existente por uniqueId/ID
+    if ((!player.wage || player.wage === 0) && resolvedSource === 'FM2008') {
+      const uid = player.uniqueId || player.externalId || (player.id?.startsWith('fm2008_') ? player.id.replace('fm2008_', '') : '');
+      const cleanUid = String(uid || '').trim().toLowerCase();
+      const cleanId = String(player.id || '').trim().toLowerCase();
+      const cleanName = cleanText(player.name).toLowerCase();
+
+      const existingPlayers = dataStore.getPlayers();
+      const candidate = existingPlayers.find((ep) => {
+        const epUid = String(ep.uniqueId || ep.externalId || (ep.id?.startsWith('fm2008_') ? ep.id.replace('fm2008_', '') : '')).trim().toLowerCase();
+        const epId = String(ep.id || '').trim().toLowerCase();
+        if (cleanUid && (epUid === cleanUid || epId === `fm2008_${cleanUid}`)) return true;
+        if (cleanId && (epId === cleanId || epUid === cleanId.replace('fm2008_', ''))) return true;
+        return false;
+      });
+
+      if (candidate && typeof candidate.wage === 'number' && candidate.wage > 0) {
+        player.wage = candidate.wage;
+        player.salary = candidate.wage;
+        player.salario = candidate.wage;
+      }
+    }
+
     let hasErrors = false;
 
     // Checa se o Unique ID / External ID está vazio ou duplicado
@@ -314,6 +338,16 @@ export function validateCSVContent(
   const validRecords = Math.max(0, totalPlayersFound - problematicRecordsCount);
   const previewPlayers = players.slice(0, 20);
 
+  let totalWithSalary = 0;
+  let totalWithoutSalary = 0;
+  players.forEach((p) => {
+    if (typeof p.wage === 'number' && p.wage > 0) {
+      totalWithSalary++;
+    } else {
+      totalWithoutSalary++;
+    }
+  });
+
   const canImport = hasNameColumn && totalPlayersFound > 0 && problematicRecordsCount === 0;
   const isReadyForFutureImport = hasNameColumn && totalPlayersFound > 0;
 
@@ -337,6 +371,8 @@ export function validateCSVContent(
     previewPlayers,
     allPlayers: players,
     databaseSource: resolvedSource,
+    totalWithSalary,
+    totalWithoutSalary,
     canImport,
     isReadyForFutureImport,
   };

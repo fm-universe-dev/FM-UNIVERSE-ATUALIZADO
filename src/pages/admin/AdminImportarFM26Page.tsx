@@ -17,6 +17,7 @@ import {
   FM26ImportAuditRecord,
 } from '../../types/fm26';
 import { formatCurrencyBRL } from '../../utils/currency';
+import { parseMonetaryBRL } from '../../services/fm26Normalizer';
 import { PositionBadge, RatingBadge } from '../../components/common/Badge';
 import { GoogleAuthCard } from '../../components/auth/GoogleAuthCard';
 import {
@@ -1571,6 +1572,30 @@ Jesús Vallejo;Real Madrid;27;CB;74;75;R$ 25.000.000;R$ 950.000;Espanha;Destro`;
                     Campos estruturais
                   </span>
                 </div>
+
+                <div className="bg-[#121212] border border-emerald-900/50 rounded-xl p-3.5 bg-gradient-to-b from-emerald-950/20 to-transparent">
+                  <span className="text-xs text-emerald-400 font-medium block mb-1">
+                    Com Salário
+                  </span>
+                  <span className="text-2xl font-black font-mono text-emerald-400">
+                    {activeSummary.totalWithSalary ?? 0}
+                  </span>
+                  <span className="text-[10px] text-zinc-500 block mt-1">
+                    {activeSummary.totalPlayersFound} analisados
+                  </span>
+                </div>
+
+                <div className="bg-[#121212] border border-zinc-800 rounded-xl p-3.5 bg-gradient-to-b from-zinc-900/50 to-transparent">
+                  <span className="text-xs text-zinc-400 font-medium block mb-1">
+                    Sem Salário
+                  </span>
+                  <span className="text-2xl font-black font-mono text-zinc-400">
+                    {activeSummary.totalWithoutSalary ?? 0}
+                  </span>
+                  <span className="text-[10px] text-zinc-500 block mt-1">
+                    Ausente na base
+                  </span>
+                </div>
               </div>
 
               {/* Columns Analysis */}
@@ -1781,7 +1806,7 @@ Jesús Vallejo;Real Madrid;27;CB;74;75;R$ 25.000.000;R$ 950.000;Espanha;Destro`;
                             <th className="py-2.5 px-2 text-center">POT</th>
                             <th className="py-2.5 px-3 text-right">Valor</th>
                             {isFM2008Data && <th className="py-2.5 px-3 text-right text-emerald-300">Sale Value</th>}
-                            <th className="py-2.5 px-3 text-right">Salário</th>
+                            <th className="py-2.5 px-3 text-right">SALÁRIO</th>
                             <th className="py-2.5 px-3">Nacionalidade</th>
                             {!isFM2008Data && <th className="py-2.5 px-2 text-center">Pé</th>}
                             <th className="py-2.5 px-2 text-center">Status</th>
@@ -1838,11 +1863,30 @@ Jesús Vallejo;Real Madrid;27;CB;74;75;R$ 25.000.000;R$ 950.000;Espanha;Destro`;
                                 </td>
                               )}
                               <td className="py-2 px-3 text-right text-zinc-300 font-mono text-[11px]">
-                                {player.wage > 0 ? (
-                                  formatCurrencyBRL(player.wage, { compact: false })
-                                ) : (
-                                  <span className="text-zinc-500 italic">Ausente</span>
-                                )}
+                                {(() => {
+                                  const rawVal =
+                                    player.wage ||
+                                    (player as any).salary ||
+                                    (player as any).salario ||
+                                    (player as any)?.rawRecord?.salario ||
+                                    (player as any)?.rawRecord?.Salario ||
+                                    (player as any)?.rawRecord?.SALARIO ||
+                                    (player as any)?.rawRecord?.SALÁRIO ||
+                                    (player as any)?.rawRecord?.['Salário'] ||
+                                    (player as any)?.rawRecord?.['salário'] ||
+                                    (player as any)?.rawRecord?.wage ||
+                                    (player as any)?.rawRecord?.Wage ||
+                                    0;
+                                  const num =
+                                    typeof rawVal === 'number'
+                                      ? rawVal
+                                      : parseMonetaryBRL(rawVal, 0);
+                                  return num > 0 ? (
+                                    formatCurrencyBRL(num, { compact: true, decimals: 0 })
+                                  ) : (
+                                    <span className="text-zinc-500 italic">Sem Salário</span>
+                                  );
+                                })()}
                               </td>
                               <td className="py-2 px-3 text-zinc-400">{player.nationality}</td>
                               {!isFM2008Data && (
@@ -1939,8 +1983,8 @@ Jesús Vallejo;Real Madrid;27;CB;74;75;R$ 25.000.000;R$ 950.000;Espanha;Destro`;
             </div>
           ) : (
             <>
-              {/* Métricas Oficiais da Homologação (Requisitos 1 a 6) */}
-              <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+              {/* Métricas Oficiais da Homologação (Requisitos 1 a 6 + Status Salarial) */}
+              <div className="grid grid-cols-2 sm:grid-cols-4 lg:grid-cols-8 gap-3">
                 {/* 1. Total Encontrados */}
                 <div className="bg-[#121212] border border-[#262626] rounded-xl p-3.5">
                   <span className="text-[11px] text-zinc-400 font-medium block mb-1">
@@ -2005,6 +2049,28 @@ Jesús Vallejo;Real Madrid;27;CB;74;75;R$ 25.000.000;R$ 950.000;Espanha;Destro`;
                     {activeHomologation.totalSelectedToRecord}
                   </span>
                   <span className="text-[10px] text-purple-400 block mt-1">Selecionados</span>
+                </div>
+
+                {/* 7. Com Salário */}
+                <div className="bg-[#121212] border border-emerald-900/50 rounded-xl p-3.5 bg-gradient-to-b from-emerald-950/30 to-transparent">
+                  <span className="text-[11px] text-emerald-400 font-bold block mb-1">
+                    Com Salário
+                  </span>
+                  <span className="text-2xl font-black text-emerald-400 font-mono">
+                    {activeHomologation.totalWithSalary ?? 0}
+                  </span>
+                  <span className="text-[10px] text-zinc-500 block mt-1">Salário associado</span>
+                </div>
+
+                {/* 8. Sem Salário */}
+                <div className="bg-[#121212] border border-zinc-800 rounded-xl p-3.5 bg-gradient-to-b from-zinc-900/50 to-transparent">
+                  <span className="text-[11px] text-zinc-400 font-medium block mb-1">
+                    Sem Salário
+                  </span>
+                  <span className="text-2xl font-black text-zinc-400 font-mono">
+                    {activeHomologation.totalWithoutSalary ?? 0}
+                  </span>
+                  <span className="text-[10px] text-zinc-500 block mt-1">Ausente na base</span>
                 </div>
               </div>
 
@@ -2400,7 +2466,7 @@ Jesús Vallejo;Real Madrid;27;CB;74;75;R$ 25.000.000;R$ 950.000;Espanha;Destro`;
                     <th className="py-3 px-2 text-center">OVR</th>
                     <th className="py-3 px-2 text-center">POT</th>
                     <th className="py-3 px-3 text-right">Valor</th>
-                    <th className="py-3 px-3 text-right">Salário</th>
+                    <th className="py-3 px-3 text-right">SALÁRIO</th>
                     <th className="py-3 px-3 text-center">Ação</th>
                   </tr>
                 </thead>
@@ -2526,11 +2592,33 @@ Jesús Vallejo;Real Madrid;27;CB;74;75;R$ 25.000.000;R$ 950.000;Espanha;Destro`;
 
                         {/* Salário (R$) */}
                         <td className="py-2.5 px-3 text-right font-mono text-zinc-300 whitespace-nowrap">
-                          {p.wage > 0 ? (
-                            `${formatCurrencyBRL(p.wage, { compact: true, decimals: 0 })}/mês`
-                          ) : (
-                            <span className="text-zinc-500 italic">Ausente</span>
-                          )}
+                          {(() => {
+                            const rawSalaryVal =
+                              p?.wage ||
+                              (p as any)?.salary ||
+                              (p as any)?.salario ||
+                              (item as any)?.wage ||
+                              (item as any)?.salary ||
+                              (item as any)?.salario ||
+                              (p as any)?.rawRecord?.salario ||
+                              (p as any)?.rawRecord?.Salario ||
+                              (p as any)?.rawRecord?.SALARIO ||
+                              (p as any)?.rawRecord?.SALÁRIO ||
+                              (p as any)?.rawRecord?.['Salário'] ||
+                              (p as any)?.rawRecord?.['salário'] ||
+                              (p as any)?.rawRecord?.wage ||
+                              (p as any)?.rawRecord?.Wage ||
+                              0;
+                            const finalSalary =
+                              typeof rawSalaryVal === 'number'
+                                ? rawSalaryVal
+                                : parseMonetaryBRL(rawSalaryVal, 0);
+                            return finalSalary > 0 ? (
+                              formatCurrencyBRL(finalSalary, { compact: true, decimals: 0 })
+                            ) : (
+                              <span className="text-zinc-500 italic">Sem Salário</span>
+                            );
+                          })()}
                         </td>
 
                         {/* Ação */}
