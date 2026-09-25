@@ -350,7 +350,7 @@ Jesús Vallejo;Real Madrid;27;CB;74;75;R$ 25.000.000;R$ 950.000;Espanha;Destro`;
     assert(parsedCR7.overall === 93, 'Teste 17: Overall normalizado a partir de CA 187 para 93');
     assert(playerObj.wage === 1200000, 'Teste 17: Objeto Player preserva wage = 1200000');
     assert(playerObj.overall === 93, 'Teste 17: Objeto Player preserva overall = 93');
-    assert(playerObj.clubName === 'Man Utd', 'Teste 17: Clube Man Utd preservado');
+    assert(playerObj.fm2008_clube_origem === 'Man Utd' || (playerObj as any).originClub === 'Man Utd', 'Teste 17: Clube de origem Man Utd preservado');
     assert(playerObj.nationality === 'Portugal', 'Teste 17: Nacionalidade Portugal preservada');
   }
 

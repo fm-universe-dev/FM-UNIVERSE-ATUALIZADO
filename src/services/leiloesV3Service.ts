@@ -35,9 +35,10 @@ import {
 import { Transfer, FinanceRecord, News, Player } from '../types';
 import { dataStore } from './dataStore';
 import { clubesService } from './clubesService';
-import { jogadoresService, normalizePlayerRecord } from './jogadoresService';
+import { jogadoresService, normalizePlayerRecord, getSearchVariants } from './jogadoresService';
 import { transferenciasService } from './transferenciasService';
 import { isFreeAgentClub } from '../utils/clubUtils';
+import { fm2008DefinitivePlayers } from '../data/fm2008DefinitivePlayers';
 
 /**
  * Detecta se o erro decorre de esgotamento de cotas do Firestore (Free Tier / Spark Plan).
@@ -380,6 +381,76 @@ async function ensureUserAuthReady(): Promise<{ uid: string; email: string }> {
   return { uid: 'guest-manager', email: 'manager@fm-universe.com' };
 }
 
+function isFreeAgentPlayer(p: any): boolean {
+  if (!p) return false;
+
+  // 1. Se já possui leilão ativo no momento (ABERTO ou AGENDADO), não duplicar
+  if (p.isAuctionActive || p.auctionStatus === 'IN_AUCTION') return false;
+
+  // 2. Estrelas base do FM2008 (Kaká, Cristiano Ronaldo) iniciam como Sem Clube disponíveis para o leilão V3
+  const isBaseStar =
+    p.id === 'fm2008_10058' ||
+    p.id === 'fm2008_735216' ||
+    p.uniqueId === '10058' ||
+    p.uniqueId === '735216' ||
+    p.name === 'Kaká' ||
+    p.name === 'Cristiano Ronaldo' ||
+    p.nome === 'Ronaldo, Cristiano';
+
+  if (!isBaseStar && p.auctionStatus === 'SOLD') return false;
+
+  // 3. Checa se o clube atual é um clube oficial ativo da liga FM Universe
+  const leagueClubNames = [
+    'ninja fc',
+    'fm united',
+    'real football',
+    'inter tech',
+    'porto real',
+    'santos stars',
+    'thales fc',
+    'atlantico fc',
+  ];
+  const leagueClubIds = [
+    'club-1',
+    'club-2',
+    'club-3',
+    'club-4',
+    'club-5',
+    'club-nkijwngl4orygpkesx1nvblqpbx1',
+    'club-qowywng0efuqrr1a5chlu4uymnb3',
+    'club-6',
+  ];
+
+  const rawClub = (p.clubName || p.club || p.clube || '').trim();
+  const normClub = rawClub
+    .toLowerCase()
+    .normalize('NFD')
+    .replace(/[\u0300-\u036f]/g, '')
+    .trim();
+
+  const cId = String(p.clubId || p.currentClubId || '').toLowerCase().trim();
+
+  // Para estrelas base, garante disponibilidade para criação de leilões
+  if (isBaseStar) {
+    return true;
+  }
+
+  // Se pertence a um clube oficial do FM Universe com vínculo atual na liga, NÃO é elegível
+  if (leagueClubNames.includes(normClub) || leagueClubIds.includes(cId)) {
+    return false;
+  }
+
+  // 4. Se o status for explicitamente 'Sem Clube', 'DISPONIVEL_LEILAO' ou termo livre, é elegível
+  if (p.status === 'Sem Clube' || p.status === 'DISPONIVEL_LEILAO') return true;
+  if (isFreeAgentClub(rawClub)) return true;
+  if (cId === 'sem-clube' || cId === 'free-agent') return true;
+
+  // 5. Se o jogador possui apenas um clube de origem internacional/histórico do FM2008 / FM26
+  // (ex: Manchester United, Milan, etc.) e NÃO pertence a nenhum clube oficial da liga FM Universe
+  // e NÃO foi vendido (auctionStatus !== 'SOLD'), ele é considerado livre na liga e está disponível para leilão!
+  return true;
+}
+
 export const leiloesV3Service = {
   /**
    * Obtém a instância do Firestore caso esteja disponível e com cota válida.
@@ -617,7 +688,7 @@ export const leiloesV3Service = {
 
   /**
    * BUSCA JOGADORES SEM CLUBE
-   * Consulta a base completa de atletas Sem Clube (Firestore / dataStore) com cache em memória
+   * Consulta a base completa de atletas Sem Clube diretamente na coleção /jogadores do Firestore
    * e aplica pesquisa por termos múltiplos (nome, sobrenome, posição e OVR) e filtros.
    */
   async buscarJogadoresSemClube(options?: {
@@ -631,8 +702,9 @@ export const leiloesV3Service = {
   }): Promise<Player[]> {
     const db = this.getDb();
     let freeAgents: Player[] = [];
+    const hasSearchText = Boolean(options?.search && options.search.trim());
 
-    // 1. Verifica cache em memória para evitar leituras repetidas e poupar cotas do Firestore
+    // 1. Verifica cache em memória para catálogo completo
     const isCacheValid =
       cachedSemClubeCatalog &&
       cachedSemClubeCatalog.length > 0 &&
@@ -644,81 +716,94 @@ export const leiloesV3Service = {
     } else {
       const mapById = new Map<string, Player>();
 
-      // 2. Consulta Firestore buscando a coleção completa de jogadores Sem Clube
-      if (db) {
-        try {
-          const colRef = collection(db, 'jogadores');
-          // 1. Consulta por clubName == 'Sem Clube'
-          const qName = query(colRef, where('clubName', '==', 'Sem Clube'));
-          const snapName = await getDocs(qName);
-          if (!snapName.empty) {
-            snapName.docs.forEach((d) => {
-              mapById.set(d.id, normalizePlayerRecord(d.data(), d.id));
-            });
-          }
-
-          // 2. Consulta complementar por clubId == 'sem-clube' para garantir todos os atletas livres
-          try {
-            const qId = query(colRef, where('clubId', '==', 'sem-clube'));
-            const snapId = await getDocs(qId);
-            if (!snapId.empty) {
-              snapId.docs.forEach((d) => {
-                if (!mapById.has(d.id)) {
-                  mapById.set(d.id, normalizePlayerRecord(d.data(), d.id));
-                }
-              });
-            }
-          } catch {
-            // Continua normalmente se a consulta complementar não for necessária
-          }
-        } catch (err: unknown) {
-          checkAndHandleQuotaError(err);
-          console.warn('⚠️ [Leiloes V3] Consulta ao Firestore falhou ou excedeu cota, buscando no dataStore local:', err);
+      // A) Carrega os 105 atletas da Lista Definitiva Sem Clube do FM2008 (referência do CSV)
+      for (const dp of fm2008DefinitivePlayers) {
+        if (isFreeAgentPlayer(dp) && !mapById.has(dp.id)) {
+          mapById.set(dp.id, normalizePlayerRecord(dp, dp.id));
         }
       }
 
-      // 3. Mescla com jogadores sem clube existentes no dataStore local
+      // B) Mescla com jogadores sem clube existentes no dataStore local e mockData (Kaká, CR7, etc.)
       const localPlayers = dataStore.getPlayers();
       for (const lp of localPlayers) {
-        if ((isFreeAgentClub(lp.clubName) || lp.clubId === 'sem-clube' || lp.clubId === 'free-agent') && !mapById.has(lp.id)) {
+        if (isFreeAgentPlayer(lp) && !mapById.has(lp.id)) {
           mapById.set(lp.id, normalizePlayerRecord(lp, lp.id));
+        }
+      }
+
+      // C) Se Firestore estiver disponível e com cota, consulta a coleção /jogadores
+      if (db) {
+        try {
+          const colRef = collection(db, 'jogadores');
+
+          // Consulta jogadores por diferentes campos de Sem Clube / disponíveis
+          const queries = [
+            query(colRef, where('status', '==', 'Sem Clube'), limit(500)),
+            query(colRef, where('status', '==', 'DISPONIVEL_LEILAO'), limit(500)),
+            query(colRef, where('clubName', '==', 'Sem Clube'), limit(500)),
+            query(colRef, where('clubId', '==', 'sem-clube'), limit(500)),
+            query(colRef, where('databaseSource', '==', 'FM2008'), limit(500)),
+          ];
+
+          for (const q of queries) {
+            try {
+              const snap = await getDocs(q);
+              snap.docs.forEach((d) => {
+                const data = d.data();
+                if (isFreeAgentPlayer(data) && !mapById.has(d.id)) {
+                  mapById.set(d.id, normalizePlayerRecord(data, d.id));
+                }
+              });
+            } catch (err: unknown) {
+              checkAndHandleQuotaError(err);
+            }
+          }
+        } catch (err: unknown) {
+          checkAndHandleQuotaError(err);
+          console.warn('⚠️ [Leiloes V3] Consulta ao Firestore falhou ou excedeu cota, operando com catálogo de referência:', err);
         }
       }
 
       freeAgents = Array.from(mapById.values());
 
-      // 4. Fallback se absolutamente nenhum jogador sem clube existir
-      if (freeAgents.length === 0) {
-        const rawSampleList = [
-          { id: 'free-1', name: 'Lucas Moura', age: 31, position: 'AMR', positionCategory: 'ATT', overall: 81, potential: 81, marketValue: 6000000, wage: 120000, clubId: 'sem-clube', clubName: 'Sem Clube', nationality: 'Brasil', nationalityCode: 'BRA', attributes: { pace: 84, shooting: 78, passing: 76, dribbling: 83, defending: 45, physical: 72 } },
-          { id: 'free-2', name: 'Oscar', age: 32, position: 'AMC', positionCategory: 'MID', overall: 80, potential: 80, marketValue: 5500000, wage: 150000, clubId: 'sem-clube', clubName: 'Sem Clube', nationality: 'Brasil', nationalityCode: 'BRA', attributes: { pace: 74, shooting: 77, passing: 83, dribbling: 81, defending: 50, physical: 68 } },
-          { id: 'free-3', name: 'Alex Sandro', age: 33, position: 'DL', positionCategory: 'DEF', overall: 79, potential: 79, marketValue: 4000000, wage: 90000, clubId: 'sem-clube', clubName: 'Sem Clube', nationality: 'Brasil', nationalityCode: 'BRA', attributes: { pace: 75, shooting: 60, passing: 77, dribbling: 76, defending: 81, physical: 78 } },
-          { id: 'free-4', name: 'Diego Alves', age: 38, position: 'GK', positionCategory: 'GK', overall: 77, potential: 77, marketValue: 1500000, wage: 60000, clubId: 'sem-clube', clubName: 'Sem Clube', nationality: 'Brasil', nationalityCode: 'BRA', attributes: { pace: 50, shooting: 20, passing: 65, dribbling: 45, defending: 78, physical: 70 } },
-          { id: 'free-5', name: 'Paulinho', age: 35, position: 'MC', positionCategory: 'MID', overall: 78, potential: 78, marketValue: 3000000, wage: 85000, clubId: 'sem-clube', clubName: 'Sem Clube', nationality: 'Brasil', nationalityCode: 'BRA', attributes: { pace: 68, shooting: 76, passing: 77, dribbling: 74, defending: 75, physical: 79 } },
-          { id: 'free-6', name: 'Miranda', age: 39, position: 'DC', positionCategory: 'DEF', overall: 76, potential: 76, marketValue: 1000000, wage: 50000, clubId: 'sem-clube', clubName: 'Sem Clube', nationality: 'Brasil', nationalityCode: 'BRA', attributes: { pace: 55, shooting: 40, passing: 70, dribbling: 62, defending: 82, physical: 74 } },
-          { id: 'free-7', name: 'Nilmar', age: 29, position: 'ST', positionCategory: 'ATT', overall: 79, potential: 81, marketValue: 4500000, wage: 95000, clubId: 'sem-clube', clubName: 'Sem Clube', nationality: 'Brasil', nationalityCode: 'BRA', attributes: { pace: 88, shooting: 79, passing: 71, dribbling: 82, defending: 35, physical: 68 } },
-          { id: 'free-8', name: 'Rafael Sóbis', age: 30, position: 'ST', positionCategory: 'ATT', overall: 77, potential: 78, marketValue: 3500000, wage: 80000, clubId: 'sem-clube', clubName: 'Sem Clube', nationality: 'Brasil', nationalityCode: 'BRA', attributes: { pace: 78, shooting: 78, passing: 75, dribbling: 76, defending: 40, physical: 73 } },
-          { id: 'free-9', name: 'Diego Cavalieri', age: 37, position: 'GK', positionCategory: 'GK', overall: 75, potential: 75, marketValue: 900000, wage: 45000, clubId: 'sem-clube', clubName: 'Sem Clube', nationality: 'Brasil', nationalityCode: 'BRA', attributes: { pace: 45, shooting: 20, passing: 60, dribbling: 40, defending: 76, physical: 68 } },
-          { id: 'free-10', name: 'Fábio Santos', age: 38, position: 'DL', positionCategory: 'DEF', overall: 76, potential: 76, marketValue: 1100000, wage: 55000, clubId: 'sem-clube', clubName: 'Sem Clube', nationality: 'Brasil', nationalityCode: 'BRA', attributes: { pace: 65, shooting: 62, passing: 75, dribbling: 70, defending: 78, physical: 72 } },
-          { id: 'free-11', name: 'Jádson', age: 36, position: 'AMC', positionCategory: 'MID', overall: 76, potential: 76, marketValue: 1200000, wage: 60000, clubId: 'sem-clube', clubName: 'Sem Clube', nationality: 'Brasil', nationalityCode: 'BRA', attributes: { pace: 60, shooting: 75, passing: 81, dribbling: 76, defending: 45, physical: 64 } },
-          { id: 'free-12', name: 'Elias', age: 35, position: 'MC', positionCategory: 'MID', overall: 76, potential: 76, marketValue: 1300000, wage: 60000, clubId: 'sem-clube', clubName: 'Sem Clube', nationality: 'Brasil', nationalityCode: 'BRA', attributes: { pace: 70, shooting: 72, passing: 76, dribbling: 73, defending: 71, physical: 74 } },
-          { id: 'free-13', name: 'Vágner Love', age: 39, position: 'ST', positionCategory: 'ATT', overall: 75, potential: 75, marketValue: 800000, wage: 50000, clubId: 'sem-clube', clubName: 'Sem Clube', nationality: 'Brasil', nationalityCode: 'BRA', attributes: { pace: 68, shooting: 77, passing: 71, dribbling: 75, defending: 35, physical: 72 } },
-          { id: 'free-14', name: 'Dentinho', age: 33, position: 'AML', positionCategory: 'ATT', overall: 75, potential: 75, marketValue: 1200000, wage: 50000, clubId: 'sem-clube', clubName: 'Sem Clube', nationality: 'Brasil', nationalityCode: 'BRA', attributes: { pace: 76, shooting: 73, passing: 72, dribbling: 77, defending: 38, physical: 69 } },
-          { id: 'free-15', name: 'Dedé', age: 35, position: 'DC', positionCategory: 'DEF', overall: 76, potential: 76, marketValue: 1100000, wage: 55000, clubId: 'sem-clube', clubName: 'Sem Clube', nationality: 'Brasil', nationalityCode: 'BRA', attributes: { pace: 65, shooting: 45, passing: 65, dribbling: 60, defending: 80, physical: 82 } },
-        ];
-        const sampleFreeAgents: Player[] = rawSampleList.map((item) =>
-          normalizePlayerRecord(item, item.id)
-        );
-        dataStore.savePlayersBatch(sampleFreeAgents);
-        freeAgents = sampleFreeAgents;
+      if (freeAgents.length > 0) {
+        cachedSemClubeCatalog = freeAgents;
+        lastSemClubeCatalogFetch = Date.now();
       }
+    }
 
-      // Ordenação padrão estável: OVR decrescente, depois nome
-      freeAgents.sort((a, b) => (b.overall || 70) - (a.overall || 70) || (a.name || '').localeCompare(b.name || ''));
+    // Se há termo de busca e Firestore está disponível, tenta enriquecer com variantes adicionais
+    if (hasSearchText && db) {
+      try {
+        const colRef = collection(db, 'jogadores');
+        const rawSearch = options!.search!.trim();
+        const searchVariants = getSearchVariants(rawSearch).slice(0, 6);
 
-      // Salva no cache em memória
-      cachedSemClubeCatalog = freeAgents;
-      lastSemClubeCatalogFetch = Date.now();
+        for (const variant of searchVariants) {
+          try {
+            const qName = query(
+              colRef,
+              where('name', '>=', variant),
+              where('name', '<=', variant + '\uf8ff'),
+              limit(40)
+            );
+            const snapName = await getDocs(qName);
+            snapName.docs.forEach((d) => {
+              const data = d.data();
+              if (isFreeAgentPlayer(data)) {
+                const normalized = normalizePlayerRecord(data, d.id);
+                if (!freeAgents.some((p) => p.id === d.id)) {
+                  freeAgents.push(normalized);
+                }
+              }
+            });
+          } catch {
+            // quota ou índice
+          }
+        }
+      } catch {
+        // quota
+      }
     }
 
     let result = freeAgents;
@@ -746,6 +831,8 @@ export const leiloesV3Service = {
           p.knownAs,
           p.shortName,
           (p as any).nickname,
+          p.name?.includes(',') ? p.name.split(',').reverse().map((s) => s.trim()).join(' ') : '',
+          (p as any).nome?.includes(',') ? (p as any).nome.split(',').reverse().map((s: string) => s.trim()).join(' ') : '',
           p.position,
           (p as any).posicao,
           ...(p.secondaryPositions || []),
@@ -753,7 +840,10 @@ export const leiloesV3Service = {
           p.nationality,
           (p as any).nacionalidade,
           p.nationalityCode,
+          p.clubName,
           (p as any).fm2008_clube_origem,
+          (p as any).rawFMData?.clube,
+          (p as any).rawFMData?.Club,
           (p as any).originClub,
           String(p.overall || (p as any).ca || ''),
           String(p.potential || (p as any).pa || ''),

@@ -46,6 +46,7 @@ import {
   mockSeasons,
   initialFM2008Players,
 } from '../data/mockData';
+import { fm2008DefinitivePlayers } from '../data/fm2008DefinitivePlayers';
 
 const STORAGE_KEYS = {
   CLUBS: 'fmu_clubs',
@@ -119,27 +120,83 @@ class DataStore {
         }
       }
 
-      // Garante que atletas da base FM2008 ou importados com clube proprietário original
-      // tenham seus clubes devidamente registrados na coleção de clubes do FM Universe (ex: Cristiano Ronaldo -> Manchester United)
-      let clubsNeedSave = false;
-      for (const p of this.players) {
-        const cName = (p.clubName || p.club || '').trim();
-        if (cName && !isFreeAgentClub(cName)) {
-          const matched =
-            findMatchingClub(cName, this.clubs) ||
-            (p.clubId ? findMatchingClub(p.clubId, this.clubs) : undefined);
-          if (!matched) {
-            const newClub = createFMUniverseClubObject(cName, p.clubId);
-            this.clubs.push(newClub);
-            p.clubId = newClub.id;
-            clubsNeedSave = true;
-          } else if (!p.clubId || p.clubId === 'sem-clube' || p.clubId.startsWith('club-sem-clube')) {
-            p.clubId = matched.id;
+      // Garante a presença dos atletas definitivos do FM2008 extraídos do CSV de referência
+      if (fm2008DefinitivePlayers && fm2008DefinitivePlayers.length > 0) {
+        let needsSaveDef = false;
+        for (const defP of fm2008DefinitivePlayers) {
+          if (!this.players.some((p) => p.id === defP.id || p.uniqueId === defP.uniqueId)) {
+            this.players.push(defP);
+            needsSaveDef = true;
           }
         }
+        if (needsSaveDef) {
+          this.saveToStorage(STORAGE_KEYS.PLAYERS, this.players);
+        }
       }
-      if (clubsNeedSave) {
-        this.saveToStorage(STORAGE_KEYS.CLUBS, this.clubs);
+
+      // REGRA DEFINITIVA: Separar Clube de Origem FM2008 do Clube Atual na Liga
+      // Clubes históricos do FM2008 (ex: Manchester United, Barcelona, Milan, etc.) representam SOMENTE
+      // a origem histórica (fm2008_clube_origem).
+      // Na liga FM Universe, todos os atletas importados iniciam com vínculo atual = 'Sem Clube',
+      // ficando disponíveis para os leilões.
+      // EXCEÇÃO: Jogadores já arrematados/liquidados em leilão (auctionStatus === 'SOLD', ex: Kaká -> Ninja FC)
+      // permanecem estritamente vinculados aos seus respectivos clubes compradores oficiais.
+      const officialLeagueClubIds = new Set([
+        'club-1',
+        'club-2',
+        'club-3',
+        'club-4',
+        'club-5',
+        'club-nkijwngl4orygpkesx1nvblqpbx1',
+        'club-qowywng0efuqrr1a5chlu4uymnb3',
+      ]);
+      const officialLeagueClubNames = new Set([
+        'ninja fc',
+        'fm united',
+        'real football',
+        'inter tech',
+        'porto real',
+        'santos stars',
+        'thales fc',
+      ]);
+
+      let playersNeedSave = false;
+      for (const p of this.players) {
+        // Se já foi liquidado/vendido no FM Universe (ex: Kaká -> Ninja FC com auctionStatus = SOLD),
+        // preserva estritamente o vínculo do comprador
+        if (p.auctionStatus === 'SOLD') {
+          continue;
+        }
+
+        const rawClubName = (p.clubName || p.club || (p as any).clube || '').trim();
+        const normClub = rawClubName.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+        const cId = String(p.clubId || p.currentClubId || '').toLowerCase().trim();
+
+        // Se já pertence a um clube oficial da liga participante, preserva
+        if (officialLeagueClubIds.has(cId) || officialLeagueClubNames.has(normClub)) {
+          continue;
+        }
+
+        // Caso contrário, se possuir um clube internacional / de procedência (ex: Manchester United, Milan, etc.)
+        if (rawClubName && !isFreeAgentClub(rawClubName)) {
+          (p as any).fm2008_clube_origem = (p as any).fm2008_clube_origem || rawClubName;
+          (p as any).originClub = (p as any).originClub || rawClubName;
+        }
+
+        // Define o vínculo atual como Sem Clube para abertura de leilões
+        if (p.clubName !== 'Sem Clube' || p.clubId !== 'sem-clube' || p.status !== 'Sem Clube') {
+          p.clubName = 'Sem Clube';
+          p.clubId = 'sem-clube';
+          p.currentClubName = 'Sem Clube';
+          p.currentClubId = 'sem-clube';
+          p.club = 'Sem Clube';
+          p.status = 'Sem Clube';
+          playersNeedSave = true;
+        }
+      }
+
+      if (playersNeedSave) {
+        this.saveToStorage(STORAGE_KEYS.PLAYERS, this.players);
       }
       this.matches = this.loadFromStorage(STORAGE_KEYS.MATCHES, mockMatches);
       this.matches = this.matches.filter((m) => m.homeClubId !== 'club-6' && m.awayClubId !== 'club-6');
@@ -572,6 +629,26 @@ class DataStore {
         moralesPlayer.isAuctionActive = false;
         moralesPlayer.auctionStatus = 'SOLD';
         this.saveToStorage(STORAGE_KEYS.PLAYERS, this.players);
+      }
+
+      // REGRA DEFINITIVA: Kaká e atletas base do FM2008 iniciam Sem Clube disponíveis para o leilão V3
+      const kakaPlayer = this.players.find((p) => p.id === 'fm2008_10058' || p.name === 'Kaká');
+      if (kakaPlayer) {
+        const hasRealKakaSale = this.auctions.some(
+          (a) => (a.playerId === 'fm2008_10058' || a.playerName?.includes('Kaká')) && a.status === 'ENCERRADO' && a.winnerClubId
+        );
+        if (!hasRealKakaSale && (kakaPlayer.auctionStatus === 'SOLD' || kakaPlayer.clubName === 'Ninja FC')) {
+          kakaPlayer.clubId = 'sem-clube';
+          kakaPlayer.clubName = 'Sem Clube';
+          kakaPlayer.currentClubId = 'sem-clube';
+          kakaPlayer.currentClubName = 'Sem Clube';
+          kakaPlayer.status = 'Sem Clube';
+          kakaPlayer.isAuctionActive = false;
+          kakaPlayer.auctionStatus = undefined;
+          kakaPlayer.fm2008_clube_origem = 'Milan';
+          kakaPlayer.originClub = 'Milan';
+          this.saveToStorage(STORAGE_KEYS.PLAYERS, this.players);
+        }
       }
 
       // Assegura o registro oficial da transferência de Gabriel Morales para o Ninja FC

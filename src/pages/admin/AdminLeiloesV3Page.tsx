@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Gavel,
   Plus,
@@ -65,10 +65,36 @@ export const AdminLeiloesV3Page: React.FC = () => {
   const [loadingMass, setLoadingMass] = useState(false);
   const [massActionLoading, setMassActionLoading] = useState(false);
   const [massJogadores, setMassJogadores] = useState<Player[]>([]);
-  const [selectedPlayerIds, setSelectedPlayerIds] = useState<Set<string>>(new Set());
+  const [selectedPlayersMap, setSelectedPlayersMap] = useState<Map<string, Player>>(new Map());
   const [filtroMassBusca, setFiltroMassBusca] = useState('');
   const [filtroMassPosicao, setFiltroMassPosicao] = useState<'ALL' | 'GK' | 'DEF' | 'MID' | 'ATT'>('ALL');
   const [filtroMassOvrMin, setFiltroMassOvrMin] = useState<number>(0);
+
+  // Set de IDs selecionados derivado do Map para lookups O(1) rápidos
+  const selectedPlayerIds = useMemo(() => new Set(selectedPlayersMap.keys()), [selectedPlayersMap]);
+
+  // Carrega jogadores Sem Clube diretamente da coleção /jogadores
+  const carregarJogadoresMassa = useCallback(async (forcarRefresh = false) => {
+    setLoadingMass(true);
+    try {
+      const list = await leiloesV3Service.buscarJogadoresSemClube({
+        getAll: true,
+        forceRefresh: forcarRefresh,
+      });
+      setMassJogadores(list || []);
+    } catch (err) {
+      console.warn('Erro ao carregar atletas sem clube:', err);
+    } finally {
+      setLoadingMass(false);
+    }
+  }, []);
+
+  // Ao abrir o modal de criação em massa, carrega o catálogo completo para pesquisa total
+  useEffect(() => {
+    if (isMassModalOpen) {
+      carregarJogadoresMassa();
+    }
+  }, [isMassModalOpen, carregarJogadoresMassa]);
 
   // Configuração do lote (Incremento mínimo e Encerramento)
   const [massMinIncrement, setMassMinIncrement] = useState<number>(100000);
@@ -93,9 +119,9 @@ export const AdminLeiloesV3Page: React.FC = () => {
     return set;
   }, [leiloes]);
 
-  // Lista filtrada em memória de atletas Sem Clube para criação em massa (pesquisa na base completa)
+  // Lista filtrada de atletas Sem Clube para criação em massa
   const [massPaginaAtual, setMassPaginaAtual] = useState<number>(1);
-  const ITENS_POR_PAGINA = 100;
+  const ITENS_POR_PAGINA = 50;
 
   // Reseta a página para 1 quando os filtros mudam
   useEffect(() => {
@@ -124,6 +150,8 @@ export const AdminLeiloesV3Page: React.FC = () => {
             p.knownAs,
             p.shortName,
             (p as any).nickname,
+            p.name?.includes(',') ? p.name.split(',').reverse().map((s) => s.trim()).join(' ') : '',
+            (p as any).nome?.includes(',') ? (p as any).nome.split(',').reverse().map((s: string) => s.trim()).join(' ') : '',
             p.position,
             (p as any).posicao,
             ...(p.secondaryPositions || []),
@@ -131,7 +159,10 @@ export const AdminLeiloesV3Page: React.FC = () => {
             p.nationality,
             (p as any).nacionalidade,
             p.nationalityCode,
+            p.clubName,
             (p as any).fm2008_clube_origem,
+            (p as any).rawFMData?.clube,
+            (p as any).rawFMData?.Club,
             (p as any).originClub,
             String(p.overall || (p as any).ca || ''),
             String(p.potential || (p as any).pa || ''),
@@ -306,58 +337,57 @@ export const AdminLeiloesV3Page: React.FC = () => {
   };
 
   // Abre o modal de criação em massa e carrega a base completa de jogadores Sem Clube
-  const handleOpenMassModal = async () => {
+  const handleOpenMassModal = () => {
     setIsMassModalOpen(true);
     setMassResultDetails(null);
     setMassConfirmModal(false);
-    setSelectedPlayerIds(new Set());
+    setSelectedPlayersMap(new Map());
     setMassPaginaAtual(1);
-    setLoadingMass(true);
-    try {
-      const list = await leiloesV3Service.buscarJogadoresSemClube({ getAll: true });
-      setMassJogadores(list || []);
-    } catch (err) {
-      console.warn('Erro ao carregar atletas sem clube:', err);
-    } finally {
-      setLoadingMass(false);
-    }
+    setFiltroMassBusca('');
+    setFiltroMassPosicao('ALL');
+    setFiltroMassOvrMin(0);
+    carregarJogadoresMassa('', 'ALL', 0);
   };
 
-  // Alterna seleção de um jogador individual
-  const handleTogglePlayer = (playerId: string) => {
-    if (activeAuctionPlayerIds.has(playerId)) return;
-    const next = new Set(selectedPlayerIds);
-    if (next.has(playerId)) {
-      next.delete(playerId);
-    } else {
-      next.add(playerId);
-    }
-    setSelectedPlayerIds(next);
+  // Alterna seleção de um jogador individual mantendo o objeto completo em memória
+  const handleTogglePlayer = (jogador: Player) => {
+    if (activeAuctionPlayerIds.has(jogador.id)) return;
+    setSelectedPlayersMap((prev) => {
+      const next = new Map(prev);
+      if (next.has(jogador.id)) {
+        next.delete(jogador.id);
+      } else {
+        next.set(jogador.id, jogador);
+      }
+      return next;
+    });
   };
 
   // Alterna selecionar todos os jogadores visíveis e elegíveis da página atual
   const handleToggleSelectAll = () => {
-    const elegiveisIds = jogadoresElegiveisPagina.map((p) => p.id);
+    const elegiveis = jogadoresElegiveisPagina;
     const areAllSelected =
-      elegiveisIds.length > 0 && elegiveisIds.every((id) => selectedPlayerIds.has(id));
+      elegiveis.length > 0 && elegiveis.every((p) => selectedPlayersMap.has(p.id));
 
-    const next = new Set(selectedPlayerIds);
-    if (areAllSelected) {
-      elegiveisIds.forEach((id) => next.delete(id));
-    } else {
-      elegiveisIds.forEach((id) => next.add(id));
-    }
-    setSelectedPlayerIds(next);
+    setSelectedPlayersMap((prev) => {
+      const next = new Map(prev);
+      if (areAllSelected) {
+        elegiveis.forEach((p) => next.delete(p.id));
+      } else {
+        elegiveis.forEach((p) => next.set(p.id, p));
+      }
+      return next;
+    });
   };
 
   // Executa a criação dos leilões em massa via writeBatch
   const handleExecutarCriarLeiloesEmMassa = async () => {
-    if (selectedPlayerIds.size === 0) return;
+    if (selectedPlayersMap.size === 0) return;
     const adminUid = firebaseUser?.uid || user?.id || 'admin-master';
 
     setMassActionLoading(true);
     try {
-      const selecionados = massJogadores.filter((p) => selectedPlayerIds.has(p.id));
+      const selecionados: Player[] = Array.from(selectedPlayersMap.values());
       const res = await leiloesV3Service.criarLeiloesEmMassa({
         jogadores: selecionados.map((p) => {
           const valorMercado = Math.max(10000, Number(p.marketValue || 1000000));
@@ -368,7 +398,7 @@ export const AdminLeiloesV3Page: React.FC = () => {
             playerClub: 'Sem Clube',
             playerPosition: p.position,
             playerRating: p.overall || 70,
-            playerPhoto: p.photoUrl || null,
+            playerPhoto: p.photo || p.avatar || (p as any).photoUrl || null,
             marketValue: valorMercado,
             initialBid: valorMercado,
           };
@@ -1110,7 +1140,7 @@ export const AdminLeiloesV3Page: React.FC = () => {
                       {selectedPlayerIds.size > 0 && (
                         <button
                           type="button"
-                          onClick={() => setSelectedPlayerIds(new Set())}
+                          onClick={() => setSelectedPlayersMap(new Map())}
                           className="px-2.5 py-1.5 rounded-lg bg-slate-800/60 hover:bg-slate-800 text-slate-400 hover:text-slate-200 transition"
                         >
                           Limpar Seleção
@@ -1147,11 +1177,12 @@ export const AdminLeiloesV3Page: React.FC = () => {
                     jogadoresExibidos.map((jogador) => {
                       const isSelected = selectedPlayerIds.has(jogador.id);
                       const hasActiveAuction = activeAuctionPlayerIds.has(jogador.id);
+                      const salarioJogador = Number(jogador.wage || (jogador as any).salario || (jogador as any).salary || 0);
 
                       return (
                         <div
                           key={jogador.id}
-                          onClick={() => !hasActiveAuction && handleTogglePlayer(jogador.id)}
+                          onClick={() => !hasActiveAuction && handleTogglePlayer(jogador)}
                           className={`pt-2.5 pb-2.5 px-3 rounded-xl flex items-center justify-between transition ${
                             hasActiveAuction
                               ? 'opacity-50 bg-slate-950/20 cursor-not-allowed'
@@ -1166,7 +1197,7 @@ export const AdminLeiloesV3Page: React.FC = () => {
                               type="checkbox"
                               checked={isSelected}
                               disabled={hasActiveAuction}
-                              onChange={() => handleTogglePlayer(jogador.id)}
+                              onChange={() => handleTogglePlayer(jogador)}
                               onClick={(e) => e.stopPropagation()}
                               className="w-4 h-4 rounded border-slate-700 text-amber-500 focus:ring-amber-500 bg-slate-900 cursor-pointer disabled:cursor-not-allowed"
                             />
@@ -1217,6 +1248,11 @@ export const AdminLeiloesV3Page: React.FC = () => {
                               <span className="text-xs font-mono font-bold text-emerald-400">
                                 R$ {Number(jogador.marketValue || 1000000).toLocaleString('pt-BR')}
                               </span>
+                              {salarioJogador > 0 && (
+                                <span className="text-[10px] text-slate-400 block font-medium">
+                                  Salário: <strong className="text-slate-300">R$ {salarioJogador.toLocaleString('pt-BR')}</strong>
+                                </span>
+                              )}
                             </div>
                           </div>
                         </div>

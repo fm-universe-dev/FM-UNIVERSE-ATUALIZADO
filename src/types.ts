@@ -57,7 +57,8 @@ export type PlayerStatus =
   | 'TIRED'
   | 'INJURED'
   | 'SUSPENDED'
-  | 'TRANSFER_LISTED';
+  | 'TRANSFER_LISTED'
+  | 'Sem Clube';
 
 export type PlayerMorale = 'Muito Baixa' | 'Baixa' | 'Normal' | 'Boa' | 'Excelente';
 
@@ -286,6 +287,8 @@ export interface Player {
   sourceVersion?: string; // Ex: "FM26_v26.2"
   database?: string; // Ex: "FM26" ou "FM2008"
   databaseSource?: 'FM2008' | 'FM26' | string; // Origem explícita canônica
+  fm2008_clube_origem?: string; // Clube de procedência histórica original no FM2008
+  originClub?: string; // Clube de origem de importação
   importedAt?: string; // ISO timestamp de importação
   importBatchId?: string; // ID do lote de importação (fm26_import_batches/{importBatchId})
   externalId?: string; // Unique ID (UID) originário do Football Manager

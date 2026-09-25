@@ -68,8 +68,66 @@ export function normalizePlayerRecord(raw: any, id: string): Player {
   p.positionCategory = raw.positionCategory || 'MID';
   p.name = raw.name || raw.nome || raw.shortName || raw.knownAs || 'Jogador';
   p.fullName = raw.fullName || raw.nomeCompleto || raw.nome || p.name;
-  p.clubName = raw.clubName || raw.clube || 'Sem Clube';
-  p.clubId = raw.clubId || 'free-agent';
+
+  const officialLeagueClubNames = [
+    'ninja fc',
+    'fm united',
+    'real football',
+    'inter tech',
+    'porto real',
+    'santos stars',
+    'thales fc',
+    'atlantico fc',
+  ];
+  const officialLeagueClubIds = [
+    'club-1',
+    'club-2',
+    'club-3',
+    'club-4',
+    'club-5',
+    'club-nkijwngl4orygpkesx1nvblqpbx1',
+    'club-qowywng0efuqrr1a5chlu4uymnb3',
+    'club-6',
+  ];
+
+  const rawClub = String(raw.clubName || raw.clube || raw.club || '').trim();
+  const normRawClub = rawClub.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '').trim();
+  const rawClubId = String(raw.clubId || raw.currentClubId || '').toLowerCase().trim();
+
+  // Origem histórica do FM2008 / FM26 preservada estritamente
+  p.fm2008_clube_origem =
+    raw.fm2008_clube_origem ||
+    raw.originClub ||
+    raw.rawFMData?.clube ||
+    raw.rawFMData?.Club ||
+    raw.rawRecord?.Club ||
+    raw.rawRecord?.Clube ||
+    (!isFreeAgentClub(rawClub) && !officialLeagueClubNames.includes(normRawClub) ? rawClub : undefined);
+
+  p.originClub = p.fm2008_clube_origem;
+
+  // Se o jogador já foi liquidado no FM Universe (auctionStatus === 'SOLD') ou pertence a um clube oficial da liga:
+  if (
+    raw.auctionStatus === 'SOLD' ||
+    officialLeagueClubNames.includes(normRawClub) ||
+    officialLeagueClubIds.includes(rawClubId)
+  ) {
+    p.clubName = raw.clubName || raw.clube || 'Sem Clube';
+    p.clubId = raw.clubId || 'free-agent';
+    p.currentClubName = raw.currentClubName || p.clubName;
+    p.currentClubId = raw.currentClubId || p.clubId;
+    p.auctionStatus = raw.auctionStatus || (officialLeagueClubNames.includes(normRawClub) ? 'SOLD' : undefined);
+    p.status = raw.status || 'FIT';
+  } else {
+    // Atletas importados sem clube atual na liga iniciam como Sem Clube
+    p.clubName = 'Sem Clube';
+    p.clubId = 'sem-clube';
+    p.currentClubName = 'Sem Clube';
+    p.currentClubId = 'sem-clube';
+    p.status = 'Sem Clube';
+    p.auctionStatus = raw.auctionStatus;
+  }
+
   p.contractUntil = p.contractUntil || '2026-12-31';
   p.morale = p.morale || 'Muito Boa';
   p.condition = typeof p.condition === 'number' ? p.condition : 95;

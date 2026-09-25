@@ -276,21 +276,25 @@ export function createNewPlayerFromFM26(
   let clubName = 'Sem Clube';
 
   const rawClub = (parsed.club || '').trim();
+  const originClub = rawClub && !isFreeAgentClub(rawClub) ? rawClub : undefined;
+
   if (rawClub && !isFreeAgentClub(rawClub)) {
-    const matched = findMatchingClub(rawClub, allClubs);
-    if (matched) {
-      clubId = matched.id;
-      clubName = matched.name;
-    } else {
-      const newClub = createFMUniverseClubObject(rawClub);
-      allClubs.push(newClub);
-      try {
-        dataStore.saveClub(newClub);
-      } catch {
-        // ignore
+    if (!isFM2008) {
+      const matched = findMatchingClub(rawClub, allClubs);
+      if (matched) {
+        clubId = matched.id;
+        clubName = matched.name;
+      } else {
+        const newClub = createFMUniverseClubObject(rawClub);
+        allClubs.push(newClub);
+        try {
+          dataStore.saveClub(newClub);
+        } catch {
+          // ignore
+        }
+        clubId = newClub.id;
+        clubName = newClub.name;
       }
-      clubId = newClub.id;
-      clubName = newClub.name;
     }
   }
 
@@ -330,6 +334,8 @@ export function createNewPlayerFromFM26(
     currentClubId: clubId,
     currentClubName: clubName,
     club: clubName,
+    fm2008_clube_origem: originClub,
+    originClub: originClub,
     squadStatus: parsed.squadStatus || 'Titular',
     position: parsed.position as PlayerPosition,
     positionCategory: parsed.positionCategory as PositionCategory,
@@ -341,7 +347,7 @@ export function createNewPlayerFromFM26(
     marketValue: parsed.marketValue,
     contractUntil: parsed.contractUntil || '2028-12-31',
     stats: parsed.stats || defaultStats,
-    status: 'FIT',
+    status: isFM2008 || clubId === 'sem-clube' ? 'Sem Clube' : 'FIT',
     condition: parsed.condition ?? 95,
     morale: 'Excelente',
     source: isFM2008 ? 'FM2008' : 'FM26_EXPORT',
