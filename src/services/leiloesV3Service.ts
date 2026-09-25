@@ -453,13 +453,15 @@ function isFreeAgentPlayer(p: any): boolean {
 
 export const leiloesV3Service = {
   /**
-   * Obtém a instância do Firestore caso esteja disponível e com cota válida.
+   * Obtém a instância do Firestore para conexões e listeners.
    */
   getDb(): Firestore | null {
+    const instance = getFirestoreDb() || firestoreDb;
+    if (instance) return instance;
     if (!isFirestoreAvailable()) {
       return null;
     }
-    return getFirestoreDb() || firestoreDb;
+    return null;
   },
 
   /**

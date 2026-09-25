@@ -31,7 +31,20 @@ export const ManagerLeiloesV3Page: React.FC = () => {
   const [submitting, setSubmitting] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
-  // Carrega leilões via getDocs pontual do Firestore (sem onSnapshot permanente)
+  // Listener em tempo real dos leilões (/leiloes) do Firestore
+  // Garante sincronização automática para todos os Managers sem precisar recarregar a página
+  useEffect(() => {
+    setLoading(true);
+    setQuotaError(null);
+    const unsub = leiloesV3Service.escutarLeiloes((list) => {
+      setLeiloes(list);
+      setLoading(false);
+      setRefreshing(false);
+    });
+    return () => unsub();
+  }, []);
+
+  // Atualização pontual manual acionada pelo botão "Atualizar"
   const carregarLeiloes = async (isManualRefresh = false) => {
     if (isManualRefresh) {
       setRefreshing(true);
@@ -41,7 +54,9 @@ export const ManagerLeiloesV3Page: React.FC = () => {
     setQuotaError(null);
 
     const res = await leiloesV3Service.buscarLeiloes();
-    setLeiloes(res.data);
+    if (res.data) {
+      setLeiloes(res.data);
+    }
 
     if (!res.success) {
       if (res.isQuotaExhausted) {
@@ -57,31 +72,17 @@ export const ManagerLeiloesV3Page: React.FC = () => {
     setRefreshing(false);
   };
 
-  // Carrega leilões sempre que o Manager entrar na tela
-  useEffect(() => {
-    carregarLeiloes(false);
-  }, []);
-
-  // Filtros derivados: status de leilão aberto e encerramento não expirado
+  // Filtros derivados: leilões com status de disputa aberto (ABERTO / OPEN / ATIVO / EM_ANDAMENTO)
+  // Visíveis publicamente para todos os Managers autenticados, independentemente do clube ou computador
   const leiloesAbertos = useMemo(() => {
-    const now = Date.now();
     return leiloes.filter((l) => {
       const statusNorm = String(l.status || 'ABERTO').trim().toUpperCase();
-      const isOpen =
+      return (
         statusNorm === 'ABERTO' ||
         statusNorm === 'OPEN' ||
         statusNorm === 'ATIVO' ||
-        statusNorm === 'EM_ANDAMENTO';
-
-      if (!isOpen) return false;
-
-      if (l.endTime) {
-        const endMs = new Date(l.endTime).getTime();
-        if (!isNaN(endMs) && endMs <= now) {
-          return false;
-        }
-      }
-      return true;
+        statusNorm === 'EM_ANDAMENTO'
+      );
     });
   }, [leiloes]);
 

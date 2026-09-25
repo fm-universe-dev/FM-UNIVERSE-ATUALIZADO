@@ -149,7 +149,7 @@ export function getFirebaseStorage(): FirebaseStorage | null {
 }
 
 export function getFirestoreDb(): Firestore | null {
-  if (!isFirestoreAvailable()) return null;
+  if (!isFirebaseConfigured()) return null;
   if (!app) {
     app = getApps().length > 0 ? getApp() : initializeApp(firebaseConfig);
   }

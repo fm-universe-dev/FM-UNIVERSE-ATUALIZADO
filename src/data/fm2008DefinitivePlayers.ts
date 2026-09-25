@@ -4,7 +4,7 @@ import { Player } from '../types';
  * Lista Definitiva de Atletas Sem Clube / Disponíveis para Leilão V3
  * Extraída como referência do arquivo FM2008_UNIVERSO_LISTA_DEFINITIVA_SEM_CLUBE.csv
  */
-export const fm2008DefinitivePlayers: Player[] = [
+export const fm2008DefinitivePlayers: any[] = [
   {
     "id": "fm2008_28010492",
     "uniqueId": "28010492",
