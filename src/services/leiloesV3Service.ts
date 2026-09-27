@@ -286,6 +286,45 @@ function saveLocalLances(leilaoId: string, list: Lance[]) {
 }
 
 /**
+ * Exige estritamente um usuário Firebase Auth autenticado com UID real antes de qualquer gravação no Firestore.
+ * Nunca utiliza fallbacks fictícios como 'admin-master' ou storage local.
+ */
+async function ensureRealAdminAuth(): Promise<{ uid: string; email: string }> {
+  if (!firebaseAuth || !isFirebaseConfigured()) {
+    throw new Error('Autenticação Firebase ainda não está pronta. Aguarde e tente novamente.');
+  }
+
+  try {
+    if (typeof firebaseAuth.authStateReady === 'function') {
+      await firebaseAuth.authStateReady();
+    }
+  } catch {
+    // continua com verificação via currentUser / onAuthStateChanged
+  }
+
+  let user = firebaseAuth.currentUser;
+  if (!user) {
+    await new Promise<void>((resolve) => {
+      const unsub = firebaseAuth!.onAuthStateChanged((u) => {
+        user = u;
+        unsub();
+        resolve();
+      });
+      setTimeout(() => {
+        unsub();
+        resolve();
+      }, 2000);
+    });
+  }
+
+  if (!user || !user.uid) {
+    throw new Error('Autenticação Firebase ainda não está pronta. Aguarde e tente novamente.');
+  }
+
+  return { uid: user.uid, email: user.email || '' };
+}
+
+/**
  * Garante que o usuário autenticado esteja pronto.
  * Funciona de forma transparente com Firebase Auth ou credencial local da sessão.
  */
@@ -466,13 +505,23 @@ export const leiloesV3Service = {
 
   /**
    * CRIAÇÃO DE LEILÃO
-   * Persiste no banco de dados e no cache local garantindo integridade e resposta imediata.
+   * Exige confirmação real de gravação no Firestore antes de considerar o leilão criado.
    */
   async criarLeilao(
     params: CriarLeilaoParams
   ): Promise<{ success: boolean; id?: string; error?: string }> {
     try {
-      const auth = await ensureAuthReady();
+      // 1. Exige autenticação real do Firebase Auth com UID real
+      const auth = await ensureRealAdminAuth();
+      const db = this.getDb();
+
+      if (!db) {
+        return {
+          success: false,
+          error: 'Banco de dados Firestore indisponível para gravação do leilão.',
+        };
+      }
+
       const generatedId = `leilao-${Date.now()}`;
 
       const docData: Leilao = sanitize({
@@ -493,29 +542,25 @@ export const leiloesV3Service = {
         playerPhoto: params.playerPhoto,
       });
 
-      // 1. Grava no cache local imediatamente
-      const currentList = getLocalLeiloes();
-      saveLocalLeiloes([docData, ...currentList.filter((l) => l.id !== generatedId)]);
-
-      // 2. Grava no Firestore se disponível
-      const db = this.getDb();
-      if (db) {
-        try {
-          const docRef = await addDoc(collection(db, 'leiloes'), docData);
-          if (docRef?.id) {
-            docData.id = docRef.id;
-            saveLocalLeiloes([docData, ...currentList.filter((l) => l.id !== generatedId)]);
-            return { success: true, id: docRef.id };
-          }
-        } catch (err: unknown) {
-          checkAndHandleQuotaError(err);
-          console.warn('⚠️ [Leiloes] Firestore indisponível para criação. Mantido no storage local:', err);
-        }
+      // 2. Grava no Firestore PRIMEIRO e exige confirmação do documento
+      const docRef = await addDoc(collection(db, 'leiloes'), docData);
+      if (!docRef?.id) {
+        return {
+          success: false,
+          error: 'Firestore não confirmou a criação do documento do leilão.',
+        };
       }
 
-      return { success: true, id: generatedId };
+      docData.id = docRef.id;
+
+      // 3. SOMENTE após o Firestore confirmar com sucesso, atualiza o cache local
+      const currentList = getLocalLeiloes();
+      saveLocalLeiloes([docData, ...currentList.filter((l) => l.id !== docRef.id)]);
+
+      return { success: true, id: docRef.id };
     } catch (err: unknown) {
-      console.error('❌ [Leiloes] Erro ao criar leilão:', err);
+      checkAndHandleQuotaError(err);
+      console.error('❌ [Leiloes] Falha ao persistir leilão no Firestore:', err);
       const msg = err instanceof Error ? err.message : String(err);
       return { success: false, error: msg };
     }
@@ -523,8 +568,8 @@ export const leiloesV3Service = {
 
   /**
    * CRIAÇÃO DE LEILÕES EM MASSA (LOTE)
-   * Cria múltiplos leilões utilizando writeBatch do Firestore (em lotes de até 250)
-   * e persistência local resiliente. Respeita a integridade de dados e impede duplicidade.
+   * Cria múltiplos leilões utilizando writeBatch do Firestore (em lotes de até 250).
+   * Um leilão só entra em totalCriados após o Firestore confirmar com sucesso o batch.commit().
    */
   async criarLeiloesEmMassa(
     params: CriarLeiloesEmMassaParams
@@ -537,8 +582,45 @@ export const leiloesV3Service = {
       return { totalSolicitado: 0, totalCriados: 0, totalFalhas: 0, criados: [], falhas: [] };
     }
 
-    const auth = await ensureAuthReady();
-    const adminUid = params.createdBy || auth.uid || 'admin-master';
+    // 1. Exige estritamente usuário Firebase Auth autenticado com UID real
+    let auth: { uid: string; email: string };
+    try {
+      auth = await ensureRealAdminAuth();
+    } catch (authErr) {
+      const msg =
+        authErr instanceof Error
+          ? authErr.message
+          : 'Autenticação Firebase ainda não está pronta. Aguarde e tente novamente.';
+      return {
+        totalSolicitado,
+        totalCriados: 0,
+        totalFalhas: totalSolicitado,
+        criados: [],
+        falhas: params.jogadores.map((j) => ({
+          playerId: j.playerId || 'unknown',
+          playerName: j.playerName || 'Desconhecido',
+          motivo: msg,
+        })),
+      };
+    }
+
+    const adminUid = auth.uid;
+
+    const db = this.getDb();
+    if (!db) {
+      return {
+        totalSolicitado,
+        totalCriados: 0,
+        totalFalhas: totalSolicitado,
+        criados: [],
+        falhas: params.jogadores.map((j) => ({
+          playerId: j.playerId || 'unknown',
+          playerName: j.playerName || 'Desconhecido',
+          motivo: 'Banco de dados Firestore indisponível para gravação em lote.',
+        })),
+      };
+    }
+
     const currentList = getLocalLeiloes();
 
     // Map de jogadores com leilão V3 já ativo (ABERTO ou AGENDADO)
@@ -560,7 +642,7 @@ export const leiloesV3Service = {
         continue;
       }
 
-      // Regra 6: Se o jogador já possui leilão V3 aberto, não criar outro para ele
+      // Se o jogador já possui leilão V3 aberto, não criar outro para ele
       if (activePlayerIds.has(j.playerId)) {
         falhas.push({
           playerId: j.playerId,
@@ -612,72 +694,55 @@ export const leiloesV3Service = {
     }
 
     // Gravação no Firestore utilizando writeBatch dividido em lotes de até 250 operações
-    const db = this.getDb();
     const BATCH_SIZE = 250;
 
-    if (db) {
+    for (let i = 0; i < validLeiloesToCreate.length; i += BATCH_SIZE) {
+      const chunk = validLeiloesToCreate.slice(i, i + BATCH_SIZE);
+      const batch = writeBatch(db);
+
+      for (const item of chunk) {
+        const docRef = doc(collection(db, 'leiloes'));
+        item.id = docRef.id;
+        batch.set(docRef, item);
+      }
+
       try {
-        for (let i = 0; i < validLeiloesToCreate.length; i += BATCH_SIZE) {
-          const chunk = validLeiloesToCreate.slice(i, i + BATCH_SIZE);
-          const batch = writeBatch(db);
+        await batch.commit();
+        // SOMENTE após confirmação de sucesso do batch.commit() no Firestore:
+        chunk.forEach((item) => {
+          criados.push({
+            leilaoId: item.id,
+            playerId: item.playerId,
+            playerName: item.playerName,
+          });
+        });
+      } catch (commitErr: unknown) {
+        checkAndHandleQuotaError(commitErr);
+        const errMsg = commitErr instanceof Error ? commitErr.message : String(commitErr);
+        console.error('❌ [Leiloes] Falha ao comitar lote no Firestore:', commitErr);
 
-          for (const item of chunk) {
-            const docRef = doc(collection(db, 'leiloes'));
-            item.id = docRef.id;
-            batch.set(docRef, item);
-          }
-
-          try {
-            await batch.commit();
-            chunk.forEach((item) => {
-              criados.push({
-                leilaoId: item.id,
-                playerId: item.playerId,
-                playerName: item.playerName,
-              });
-            });
-          } catch (commitErr: unknown) {
-            checkAndHandleQuotaError(commitErr);
-            console.warn('⚠️ [Leiloes] Falha ao comitar lote no Firestore. Mantido localmente:', commitErr);
-            chunk.forEach((item) => {
-              criados.push({
-                leilaoId: item.id,
-                playerId: item.playerId,
-                playerName: item.playerName,
-              });
-            });
-          }
-        }
-      } catch (err: unknown) {
-        checkAndHandleQuotaError(err);
-        console.warn('⚠️ [Leiloes] Firestore indisponível para criação em lote. Preservando no cache local:', err);
-        validLeiloesToCreate.forEach((item) => {
-          if (!criados.some((c) => c.playerId === item.playerId)) {
-            criados.push({
-              leilaoId: item.id,
-              playerId: item.playerId,
-              playerName: item.playerName,
-            });
-          }
+        // Se o batch.commit() falhar, NENHUM item desse lote entra em criados
+        chunk.forEach((item) => {
+          falhas.push({
+            playerId: item.playerId,
+            playerName: item.playerName,
+            motivo: `Falha no Firestore: ${errMsg}`,
+          });
         });
       }
-    } else {
-      // Modo local ou sem Firestore
-      validLeiloesToCreate.forEach((item) => {
-        criados.push({
-          leilaoId: item.id,
-          playerId: item.playerId,
-          playerName: item.playerName,
-        });
-      });
     }
 
-    // Atualiza cache e persistência local resiliente imediatamente
-    const updatedList = [
-      ...validLeiloesToCreate,
-      ...currentList.filter((l) => !validLeiloesToCreate.some((v) => v.id === l.id)),
-    ];
-    saveLocalLeiloes(updatedList);
+    // SOMENTE se houver leilões efetivamente confirmados pelo Firestore no lote,
+    // sincroniza o cache local com os leilões confirmados
+    if (criados.length > 0) {
+      const confirmadosIds = new Set(criados.map((c) => c.leilaoId));
+      const leiloesConfirmados = validLeiloesToCreate.filter((v) => confirmadosIds.has(v.id));
+      const updatedList = [
+        ...leiloesConfirmados,
+        ...currentList.filter((l) => !confirmadosIds.has(l.id)),
+      ];
+      saveLocalLeiloes(updatedList);
+    }
 
     return {
       totalSolicitado,

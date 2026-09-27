@@ -21,6 +21,7 @@ import { jogadoresService } from '../../services/jogadoresService';
 import { Leilao, Lance, LeilaoStatus, CriarLeiloesEmMassaResult } from '../../types/leiloesV3';
 import { Player } from '../../types';
 import { useAuth } from '../../contexts/AuthContext';
+import { firebaseAuth } from '../../config/firebase';
 
 export const AdminLeiloesV3Page: React.FC = () => {
   const { firebaseUser, user } = useAuth();
@@ -268,9 +269,12 @@ export const AdminLeiloesV3Page: React.FC = () => {
       setFeedback({ type: 'error', message: 'Selecione um jogador para o leilão.' });
       return;
     }
-    const adminUid = firebaseUser?.uid || user?.id || 'admin-master';
-    if (!adminUid) {
-      setFeedback({ type: 'error', message: 'Administrador não autenticado.' });
+    const currentFirebaseUid = firebaseUser?.uid || (firebaseAuth?.currentUser ? firebaseAuth.currentUser.uid : null);
+    if (!currentFirebaseUid) {
+      setFeedback({
+        type: 'error',
+        message: 'Autenticação Firebase ainda não está pronta. Aguarde e tente novamente.',
+      });
       return;
     }
 
@@ -285,7 +289,7 @@ export const AdminLeiloesV3Page: React.FC = () => {
       startTime,
       endTime,
       status: 'ABERTO',
-      createdBy: adminUid,
+      createdBy: currentFirebaseUid,
       playerAge: jogadorSelecionado.age,
       playerClub: jogadorSelecionado.clubName || 'Sem clube',
       playerPosition: jogadorSelecionado.position,
@@ -298,14 +302,14 @@ export const AdminLeiloesV3Page: React.FC = () => {
     if (res.success && res.id) {
       setFeedback({
         type: 'success',
-        message: `Leilão de ${jogadorSelecionado.name} criado com sucesso em /leiloes/${res.id}!`,
+        message: `Leilão de ${jogadorSelecionado.name} criado e confirmado com sucesso no Firestore (/leiloes/${res.id})!`,
       });
       setIsModalOpen(false);
       setJogadorSelecionado(null);
     } else {
       setFeedback({
         type: 'error',
-        message: res.error || 'Falha ao criar leilão.',
+        message: res.error || 'Falha ao persistir leilão no Firestore.',
       });
     }
   };
@@ -383,7 +387,14 @@ export const AdminLeiloesV3Page: React.FC = () => {
   // Executa a criação dos leilões em massa via writeBatch
   const handleExecutarCriarLeiloesEmMassa = async () => {
     if (selectedPlayersMap.size === 0) return;
-    const adminUid = firebaseUser?.uid || user?.id || 'admin-master';
+    const currentFirebaseUid = firebaseUser?.uid || (firebaseAuth?.currentUser ? firebaseAuth.currentUser.uid : null);
+    if (!currentFirebaseUid) {
+      setFeedback({
+        type: 'error',
+        message: 'Autenticação Firebase ainda não está pronta. Aguarde e tente novamente.',
+      });
+      return;
+    }
 
     setMassActionLoading(true);
     try {
@@ -405,21 +416,27 @@ export const AdminLeiloesV3Page: React.FC = () => {
         }),
         minIncrement: Number(massMinIncrement || 100000),
         endTime: massEndTime,
-        createdBy: adminUid,
+        createdBy: currentFirebaseUid,
       });
 
       setMassResultDetails(res);
       setMassConfirmModal(false);
 
-      if (res.totalCriados > 0) {
+      if (res.totalCriados > 0 && res.totalFalhas === 0) {
         setFeedback({
           type: 'success',
-          message: `${res.totalCriados} leilão(ões) criado(s) com sucesso na coleção /leiloes!`,
+          message: `${res.totalCriados} leilão(ões) criado(s) e confirmados com sucesso no Firestore!`,
         });
-      } else if (res.totalFalhas > 0) {
+      } else if (res.totalCriados > 0 && res.totalFalhas > 0) {
         setFeedback({
           type: 'error',
-          message: `Nenhum leilão pôde ser criado. Verifique as restrições indicadas.`,
+          message: `${res.totalCriados} leilão(ões) criado(s), porém ${res.totalFalhas} falharam no Firestore. Verifique os detalhes.`,
+        });
+      } else {
+        const primeiroMotivo = res.falhas[0]?.motivo || 'Verifique as permissões de administrador e a conexão com o Firestore.';
+        setFeedback({
+          type: 'error',
+          message: `Nenhum leilão foi criado no Firestore. Motivo: ${primeiroMotivo}`,
         });
       }
     } catch (err: unknown) {
