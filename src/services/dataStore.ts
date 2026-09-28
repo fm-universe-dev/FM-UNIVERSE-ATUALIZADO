@@ -28,6 +28,7 @@ import {
   isFreeAgentClub,
   findMatchingClub,
   createFMUniverseClubObject,
+  isPreservedManagerClub,
 } from '../utils/clubUtils';
 import {
   mockClubs,
@@ -104,6 +105,20 @@ class DataStore {
       this.clubs = this.loadFromStorage(STORAGE_KEYS.CLUBS, mockClubs);
       // Remove clube teste 'club-real-madrid' e 'club-6' (Atlântico FC) se ainda estiverem persistidos no storage
       this.clubs = this.clubs.filter((c) => c.id !== 'club-real-madrid' && c.id !== 'club-6');
+      // Limpeza administrativa e preservação estrita: manter apenas clubes com Manager vinculado
+      const isCleanupCompleted =
+        typeof localStorage !== 'undefined' &&
+        localStorage.getItem('fmu_cleanup_215_completed') === 'true';
+      if (isCleanupCompleted || this.clubs.some((c) => !isPreservedManagerClub(c))) {
+        this.clubs = this.clubs.filter((c) => isPreservedManagerClub(c));
+        // Garante que os 6 clubes oficiais com Manager estejam presentes
+        mockClubs.forEach((mClub) => {
+          if (!this.clubs.some((c) => c.id === mClub.id)) {
+            this.clubs.push(mClub);
+          }
+        });
+        this.saveToStorage(STORAGE_KEYS.CLUBS, this.clubs);
+      }
       this.competitions = this.loadFromStorage(STORAGE_KEYS.COMPETITIONS, mockCompetitions);
       this.players = this.loadFromStorage(STORAGE_KEYS.PLAYERS, mockPlayers);
       // Garante a presença dos atletas base FM2008 mesmo se houver cache prévio

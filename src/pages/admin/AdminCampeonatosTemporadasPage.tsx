@@ -3,8 +3,9 @@ import { useNavigation } from '../../contexts/NavigationContext';
 import { temporadasService } from '../../services/temporadasService';
 import { competicoesService } from '../../services/competicoesService';
 import { participantesService } from '../../services/participantesService';
-import { calendarioService } from '../../services/calendarioService';
-import { clubesService } from '../../services/clubesService';
+import { calendarioService, calculateCalendarMetrics } from '../../services/calendarioService';
+import { clubesService, isPreservedManagerClub } from '../../services/clubesService';
+import { managersService } from '../../services/managersService';
 import { dataStore } from '../../services/dataStore';
 import { noticiasService } from '../../services/noticiasService';
 import {
@@ -14,6 +15,7 @@ import {
   Match,
   CompetitionRules,
   CompetitionPrizeDistribution,
+  ManagerProfile,
 } from '../../types';
 import { formatCurrencyBRL } from '../../utils/currency';
 import {
@@ -48,6 +50,8 @@ import {
   Scale,
   Info,
   Ban,
+  Calculator,
+  X,
 } from 'lucide-react';
 
 type TabType =
@@ -82,6 +86,9 @@ const DEFAULT_PRIZES: CompetitionPrizeDistribution = {
   drawBonus: 200000,
 };
 
+// Export mantido para compatibilidade sem injetar clubes fictícios no sistema
+export const DEFAULT_EXTRA_CLUBS: Club[] = [];
+
 export const AdminCampeonatosTemporadasPage: React.FC = () => {
   const { navigate } = useNavigation();
 
@@ -91,6 +98,7 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
   const [competitions, setCompetitions] = useState<Competition[]>([]);
   const [selectedCompId, setSelectedCompId] = useState<string>('');
   const [allClubs, setAllClubs] = useState<Club[]>([]);
+  const [managers, setManagers] = useState<ManagerProfile[]>([]);
   const [matches, setMatches] = useState<Match[]>([]);
 
   // Aba Ativa (Calendário Oficial Corrigido em primeiro plano conforme solicitado)
@@ -109,10 +117,26 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
   const [compType, setCompType] = useState<'LIGA' | 'COPA'>('LIGA');
   const [compFormat, setCompFormat] = useState<'TODOS_CONTRA_TODOS' | 'MATA_MATA'>('TODOS_CONTRA_TODOS');
   const [compLegs, setCompLegs] = useState<'TURNO_E_RETURNO' | 'TURNO_UNICO'>('TURNO_E_RETURNO');
-  const [compRoundsCount, setCompRoundsCount] = useState<number>(10);
+  const [compRoundsCount, setCompRoundsCount] = useState<number>(18);
 
-  // Participantes Selecionados
+  // Participantes Selecionados (suporta quantidade variável de clubes sem limite rígido)
   const [selectedClubIds, setSelectedClubIds] = useState<string[]>([]);
+
+  // Modal de Confirmação Obrigatório antes de Gerar o Calendário
+  const [showGenerationConfirmModal, setShowGenerationConfirmModal] = useState<boolean>(false);
+
+  // Cálculo Automático das Métricas Regulamentares
+  const metrics = useMemo(() => {
+    const count = selectedClubIds.length >= 2 ? selectedClubIds.length : 2;
+    return calculateCalendarMetrics(count, compLegs);
+  }, [selectedClubIds.length, compLegs]);
+
+  // Mantém o número de rodadas sincronizado com o cálculo automático regulamentar
+  useEffect(() => {
+    if (metrics.roundsCount > 0) {
+      setCompRoundsCount(metrics.roundsCount);
+    }
+  }, [metrics.roundsCount]);
 
   // Regras e Premiações
   const [rules, setRules] = useState<CompetitionRules>(DEFAULT_RULES);
@@ -149,15 +173,65 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
   const loadAll = async (targetSeasonId?: string, targetCompId?: string) => {
     try {
       setLoading(true);
-      const [allSeasons, allComps, clubsList] = await Promise.all([
+      const [allSeasons, allComps, clubsList, allManagers] = await Promise.all([
         temporadasService.getAll(),
         competicoesService.getAll(),
         clubesService.getAll(),
+        managersService.getAllManagers(),
       ]);
 
       setSeasons(allSeasons);
       setCompetitions(allComps);
-      setAllClubs(clubsList);
+      setManagers(allManagers);
+
+      // 1. Obtém managers cadastrados no sistema (Firestore / managersService)
+      const activeManagers = (allManagers || []).filter((m) => m.status === 'ACTIVE' || !m.status);
+
+      // Mapeamento dos identificadores de clubes associados a Managers cadastrados
+      const managerClubIds = new Set<string>();
+      activeManagers.forEach((m) => {
+        if (m.clubId) managerClubIds.add(m.clubId);
+        if (m.uid) {
+          managerClubIds.add(m.uid);
+          managerClubIds.add(`club-${m.uid}`);
+        }
+      });
+
+      // 2. Filtra os clubes reais da coleção/estrutura atual de clubes
+      // Regras:
+      // - Buscar os clubes reais da coleção/estrutura atual de clubes.
+      // - Mostrar somente clubes que possuam vínculo válido com um Manager.
+      // - Excluir clubes fictícios/teste/mock sem Manager.
+      // - Excluir clubes genéricos importados sem Manager (ex: Falkirk, Herfølge, Veendam, Go Ahead, Excelsior, NEC etc.).
+      // - Não criar clubes automaticamente.
+      // - A quantidade de clubes deve continuar dinâmica (se existem 6 clubes com Managers, aparecem 6; quando existirem 10, aparecem 10).
+      const validClubsWithManager = clubsList.filter((club) => {
+        // Exclui clubes de teste/fictícios expressamente desativados ou banidos
+        if (
+          club.id === 'club-real-madrid' ||
+          club.id === 'club-6' ||
+          club.id === 'club-atletico-fc' ||
+          (club as any).universeType === 'TEST_FICTITIOUS'
+        ) {
+          return false;
+        }
+
+        // Exclui clubes genéricos/fictícios importados sem Manager
+        if (club.managerName?.startsWith('Diretoria ') && !club.managerId) {
+          return false;
+        }
+
+        // Verifica vínculo com Manager cadastrado ativo
+        const hasManager =
+          isPreservedManagerClub(club, activeManagers) ||
+          managerClubIds.has(club.id) ||
+          managerClubIds.has(club.slug) ||
+          (club.managerId && activeManagers.some((m) => m.uid === club.managerId || m.login === club.managerId));
+
+        return Boolean(hasManager);
+      });
+
+      setAllClubs(validClubsWithManager);
 
       // Determina temporada ativa ou selecionada
       const activeSeason =
@@ -189,74 +263,24 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
           setCompType(linkedComp.type);
           setCompFormat(linkedComp.format || 'TODOS_CONTRA_TODOS');
           setCompLegs(linkedComp.legs || 'TURNO_E_RETURNO');
-          setCompRoundsCount(linkedComp.roundsCount || 10);
+          setCompRoundsCount(linkedComp.roundsCount || 18);
           if (linkedComp.rules) setRules(linkedComp.rules);
           if (linkedComp.prizes) setPrizes(linkedComp.prizes);
 
-          // Clubes oficiais autorizados: FM United, Real Football, Inter Tech, Porto Real, Santos Stars e Thales FC.
-          // Atlético FC e Real Madrid NÃO podem aparecer no calendário.
-          const ALLOWED_6_CLUBS = [
-            'club-1', // FM United
-            'club-2', // Real Football
-            'club-3', // Inter Tech
-            'club-4', // Porto Real
-            'club-5', // Santos Stars
-            'club-qowYWnG0EfUqrr1a5cHlu4UYmNB3', // Thales FC
-          ];
-
-          // Carrega participantes da competição
+          // Carrega participantes da competição filtrando estritamente pelos clubes válidos com Manager
           const parts = await participantesService.getByCompetition(linkedComp.id);
-          let validClubIds = parts.map((p) => p.clubId).filter((id) => !['club-6', 'club-real-madrid', 'club-atletico-fc'].includes(id));
-          if (validClubIds.length !== 6) {
-            validClubIds = ALLOWED_6_CLUBS;
-            await participantesService.setParticipantsForCompetition(
-              linkedComp.id,
-              validClubIds,
-              activeSeason.id
-            );
+          let validClubIds = parts
+            .map((p) => p.clubId)
+            .filter((id) => validClubsWithManager.some((c) => c.id === id));
+
+          // Se a competição não tiver participantes gravados ou forem inválidos, inicializa com os clubes válidos disponíveis
+          if (validClubIds.length === 0) {
+            validClubIds = validClubsWithManager.map((c) => c.id);
           }
           setSelectedClubIds(validClubIds);
 
-          // Carrega partidas do calendário
-          let compMatches = await calendarioService.getCalendarByCompetition(linkedComp.id);
-
-          const hasInvalidClub = compMatches.some((m) =>
-            ['club-6', 'atlântico fc', 'atletico fc', 'real madrid'].some((b) =>
-              m.homeClubName?.toLowerCase().includes(b) ||
-              m.awayClubName?.toLowerCase().includes(b) ||
-              m.homeClubId === 'club-6' ||
-              m.awayClubId === 'club-6'
-            )
-          );
-
-          // Correção estrutural oficial: se não tiver exatamente 30 jogos ou tiver clube inválido
-          if (compMatches.length !== 30 || hasInvalidClub) {
-            try {
-              // Reabre para revisão se estiver homologada (conforme instrução administrativa)
-              if (activeSeason.status === 'HOMOLOGADA' || linkedComp.calendarStatus === 'HOMOLOGADO') {
-                activeSeason.status = 'RASCUNHO';
-                linkedComp.calendarStatus = 'RASCUNHO';
-                await temporadasService.save(activeSeason);
-                await competicoesService.save(linkedComp);
-              }
-
-              // Gera o calendário oficial de 30 partidas com mando estritamente invertido
-              compMatches = await calendarioService.generateRoundRobinCalendar({
-                competitionId: linkedComp.id,
-                seasonId: activeSeason.id,
-                legs: 'TURNO_E_RETURNO',
-                baseStartDate: activeSeason.startDate || '2026-08-08',
-                selectedClubIds: validClubIds,
-                allowAdministrativeRevision: true,
-              });
-            } catch (calErr) {
-              console.warn('⚠️ [AdminCampeonatos] Aviso ao sincronizar/gerar calendário:', calErr);
-              if (!compMatches || compMatches.length === 0) {
-                compMatches = dataStore.getMatches().filter((m) => m.competitionId === linkedComp.id);
-              }
-            }
-          }
-
+          // Carrega partidas existentes do calendário sem forçar auto-geração
+          const compMatches = await calendarioService.getCalendarByCompetition(linkedComp.id);
           setMatches(compMatches);
           setSelectedRoundFilter(1);
         }
@@ -314,8 +338,8 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
       season: nextYear,
       temporadaId: newId,
       logo: '🏆',
-      teamsCount: 6,
-      roundsCount: 10,
+      teamsCount: 10,
+      roundsCount: 18,
       currentRound: 1,
       status: 'PREVIA',
       calendarStatus: 'RASCUNHO',
@@ -343,10 +367,10 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
     setCompType(newCompObj.type);
     setCompFormat('TODOS_CONTRA_TODOS');
     setCompLegs('TURNO_E_RETURNO');
-    setCompRoundsCount(10);
+    setCompRoundsCount(18);
 
-    // Seleciona os 6 primeiros clubes reais existentes
-    const initialClubs = allClubs.slice(0, 6).map((c) => c.id);
+    // Seleciona os 10 primeiros clubes reais cadastrados
+    const initialClubs = allClubs.slice(0, 10).map((c) => c.id);
     setSelectedClubIds(initialClubs);
     setMatches([]);
     setRules({ ...DEFAULT_RULES });
@@ -366,11 +390,6 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
       return;
     }
 
-    // Proteção Thales FC: clube do manager
-    if (clubId === 'club-qowYWnG0EfUqrr1a5cHlu4UYmNB3' && selectedClubIds.includes(clubId)) {
-      showFeedback('info', 'Thales FC é o clube do Manager oficial e é recomendado mantê-lo na competição.');
-    }
-
     if (selectedClubIds.includes(clubId)) {
       setSelectedClubIds((prev) => prev.filter((id) => id !== clubId));
     } else {
@@ -384,11 +403,25 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
     setSelectedClubIds(allClubs.map((c) => c.id));
   };
 
+  // Selecionar 10 Clubes (Preset oficial para teste regulamentar de 10 clubes)
+  const handleSelect10Clubs = () => {
+    if (isHomologated) return;
+    if (allClubs.length < 10) {
+      showFeedback(
+        'info',
+        `Ainda não existem 10 clubes com Manager cadastrados no sistema (atualmente existem ${allClubs.length} clube(s) com Manager). Selecionados os ${allClubs.length} clubes válidos disponíveis.`
+      );
+      setSelectedClubIds(allClubs.map((c) => c.id));
+      return;
+    }
+    const first10 = allClubs.slice(0, 10).map((c) => c.id);
+    setSelectedClubIds(first10);
+    showFeedback('success', '10 clubes com Manager selecionados com sucesso para a disputa.');
+  };
+
   const handleClearClubSelection = () => {
     if (isHomologated) return;
-    // Mantém ao menos o Thales FC por segurança
-    const thales = allClubs.find((c) => c.name.includes('Thales') || c.id === 'club-qowYWnG0EfUqrr1a5cHlu4UYmNB3');
-    setSelectedClubIds(thales ? [thales.id] : []);
+    setSelectedClubIds([]);
   };
 
   // Reordenação de Critérios de Desempate
@@ -403,8 +436,9 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
     setRules((prev) => ({ ...prev, tiebreakers: list }));
   };
 
-  // Geração Automática de Calendário (Berger / Round-Robin)
-  const handleGenerateCalendar = async () => {
+  // Abre o modal de confirmação com "Clubes: X | Rodadas: X | Jogos: X"
+  // Não cria partidas automaticamente enquanto o administrador não confirmar!
+  const handleOpenGenerateCalendarModal = () => {
     if (isHomologated) {
       showFeedback('error', 'Temporada homologada. Não é permitido regerar o calendário.');
       return;
@@ -415,9 +449,15 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
       return;
     }
 
+    setShowGenerationConfirmModal(true);
+  };
+
+  // Executa efetivamente a geração de confrontos apenas após confirmação expressa do administrador
+  const handleConfirmGenerateCalendar = async () => {
+    setShowGenerationConfirmModal(false);
     setLoading(true);
     try {
-      // 1. Sincroniza participantes
+      // 1. Sincroniza participantes utilizando estritamente a seleção do administrador
       await participantesService.setParticipantsForCompetition(
         selectedCompId,
         selectedClubIds,
@@ -430,18 +470,17 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
         seasonId: selectedSeasonId,
         legs: compLegs,
         baseStartDate: seasonStartDate,
+        selectedClubIds,
+        allowAdministrativeRevision: true,
       });
 
       setMatches(generated);
-      const calculatedRounds =
-        compLegs === 'TURNO_E_RETURNO'
-          ? (selectedClubIds.length - (selectedClubIds.length % 2 === 0 ? 1 : 0)) * 2
-          : selectedClubIds.length - 1;
+      const calculatedRounds = metrics.roundsCount;
       setCompRoundsCount(calculatedRounds);
 
       showFeedback(
         'success',
-        `Calendário gerado com sucesso! ${generated.length} confrontos criados em ${calculatedRounds} rodadas.`
+        `Calendário gerado com sucesso! ${generated.length} confrontos criados em ${calculatedRounds} rodadas para os ${selectedClubIds.length} clubes selecionados.`
       );
     } catch (err: any) {
       console.error('Erro ao gerar calendário:', err);
@@ -695,18 +734,6 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
       roundsMap.get(r)!.push(m);
     });
 
-    const totalRounds = roundsMap.size;
-    const is30Matches = totalMatches === 30;
-    const is10Rounds = totalRounds === 10;
-
-    let allRoundsHave3Matches = true;
-    for (let r = 1; r <= 10; r++) {
-      const rMatches = roundsMap.get(r) || [];
-      if (rMatches.length !== 3) {
-        allRoundsHave3Matches = false;
-      }
-    }
-
     const clubsInMatches = new Set<string>();
     let hasBannedClub = false;
     matches.forEach((m) => {
@@ -724,7 +751,32 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
       clubsInMatches.add(m.awayClubId);
     });
 
-    let eachClubPlaysOncePerRound = true;
+    // Quantidade efetiva de clubes do torneio
+    const effectiveClubsCount =
+      clubsInMatches.size > 0 ? clubsInMatches.size : selectedClubIds.length >= 2 ? selectedClubIds.length : 2;
+    const expectedMetrics = calculateCalendarMetrics(effectiveClubsCount, compLegs);
+
+    const expectedTotalMatches = expectedMetrics.totalMatches;
+    const expectedTotalRounds = expectedMetrics.roundsCount;
+    const expectedMatchesPerRound = expectedMetrics.matchesPerRound;
+    const expectedTurnoRounds = compLegs === 'TURNO_E_RETURNO' ? expectedTotalRounds / 2 : expectedTotalRounds;
+    const expectedTurnoMatches = compLegs === 'TURNO_E_RETURNO' ? expectedTotalMatches / 2 : expectedTotalMatches;
+    const expectedHomeMatches = expectedMetrics.homeMatchesPerClub;
+    const expectedAwayMatches = expectedMetrics.awayMatchesPerClub;
+
+    const totalRounds = roundsMap.size;
+    const isMatchesCompliant = totalMatches === expectedTotalMatches && totalMatches > 0;
+    const isRoundsCompliant = totalRounds === expectedTotalRounds;
+
+    let allRoundsHaveExpectedMatches = totalMatches > 0;
+    for (let r = 1; r <= expectedTotalRounds; r++) {
+      const rMatches = roundsMap.get(r) || [];
+      if (rMatches.length !== expectedMatchesPerRound) {
+        allRoundsHaveExpectedMatches = false;
+      }
+    }
+
+    let eachClubPlaysOncePerRound = totalMatches > 0;
     roundsMap.forEach((rMatches) => {
       const clubsInRound = new Set<string>();
       rMatches.forEach((m) => {
@@ -734,18 +786,18 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
         clubsInRound.add(m.homeClubId);
         clubsInRound.add(m.awayClubId);
       });
-      if (clubsInRound.size !== 6) {
+      if (effectiveClubsCount % 2 === 0 && clubsInRound.size !== effectiveClubsCount) {
         eachClubPlaysOncePerRound = false;
       }
     });
 
-    let noDuplicateInSameLeg = true;
+    let noDuplicateInSameLeg = totalMatches > 0;
     const turnoPairs = new Set<string>();
     const returnoPairs = new Set<string>();
     matches.forEach((m) => {
       const r = Number(m.round || m.rodada || 1);
       const pair = [m.homeClubId, m.awayClubId].sort().join('_');
-      if (r <= 5) {
+      if (r <= expectedTurnoRounds) {
         if (turnoPairs.has(pair)) noDuplicateInSameLeg = false;
         turnoPairs.add(pair);
       } else {
@@ -758,24 +810,27 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
     let returnoMatchesCount = 0;
     matches.forEach((m) => {
       const r = Number(m.round || m.rodada || 1);
-      if (r <= 5) turnoMatchesCount++;
-      else if (r <= 10) returnoMatchesCount++;
+      if (r <= expectedTurnoRounds) turnoMatchesCount++;
+      else if (r <= expectedTotalRounds) returnoMatchesCount++;
     });
 
     let inversionErrorsCount = 0;
-    for (let r = 1; r <= 5; r++) {
-      const tMatches = roundsMap.get(r) || [];
-      const retMatches = roundsMap.get(r + 5) || [];
-      tMatches.forEach((tm) => {
-        const matchingReturn = retMatches.find(
-          (rm) => rm.homeClubId === tm.awayClubId && rm.awayClubId === tm.homeClubId
-        );
-        if (!matchingReturn) {
-          inversionErrorsCount++;
-        }
-      });
+    if (compLegs === 'TURNO_E_RETURNO' && totalMatches > 0) {
+      for (let r = 1; r <= expectedTurnoRounds; r++) {
+        const tMatches = roundsMap.get(r) || [];
+        const retMatches = roundsMap.get(r + expectedTurnoRounds) || [];
+        tMatches.forEach((tm) => {
+          const matchingReturn = retMatches.find(
+            (rm) => rm.homeClubId === tm.awayClubId && rm.awayClubId === tm.homeClubId
+          );
+          if (!matchingReturn) {
+            inversionErrorsCount++;
+          }
+        });
+      }
     }
-    const homeAwayInvertedInReturno = inversionErrorsCount === 0 && matches.length === 30;
+    const homeAwayInvertedInReturno =
+      compLegs === 'TURNO_UNICO' || (inversionErrorsCount === 0 && totalMatches === expectedTotalMatches && totalMatches > 0);
 
     const homeCounts: Record<string, number> = {};
     const awayCounts: Record<string, number> = {};
@@ -785,14 +840,15 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
     });
 
     const isBalancedMandos =
-      Object.values(homeCounts).every((c) => c === 5) &&
-      Object.values(awayCounts).every((c) => c === 5) &&
-      Object.keys(homeCounts).length === 6;
+      totalMatches > 0 &&
+      Object.values(homeCounts).every((c) => c === expectedHomeMatches) &&
+      Object.values(awayCounts).every((c) => c === expectedAwayMatches) &&
+      Object.keys(homeCounts).length === effectiveClubsCount;
 
     const isFullyCompliant =
-      is30Matches &&
-      is10Rounds &&
-      allRoundsHave3Matches &&
+      isMatchesCompliant &&
+      isRoundsCompliant &&
+      allRoundsHaveExpectedMatches &&
       !hasBannedClub &&
       eachClubPlaysOncePerRound &&
       noDuplicateInSameLeg &&
@@ -801,10 +857,13 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
 
     return {
       totalMatches,
-      is30Matches,
+      is30Matches: isMatchesCompliant,
+      isMatchesCompliant,
       totalRounds,
-      is10Rounds,
-      allRoundsHave3Matches,
+      is10Rounds: isRoundsCompliant,
+      isRoundsCompliant,
+      allRoundsHave3Matches: allRoundsHaveExpectedMatches,
+      allRoundsHaveExpectedMatches,
       hasBannedClub,
       eachClubPlaysOncePerRound,
       noDuplicateInSameLeg,
@@ -816,8 +875,16 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
       turnoMatchesCount,
       returnoMatchesCount,
       inversionErrorsCount,
+      expectedTotalMatches,
+      expectedTotalRounds,
+      expectedMatchesPerRound,
+      expectedTurnoRounds,
+      expectedTurnoMatches,
+      expectedHomeMatches,
+      expectedAwayMatches,
+      effectiveClubsCount,
     };
-  }, [matches]);
+  }, [matches, selectedClubIds.length, compLegs]);
 
   // Verificação de Checklist de Prontidão
   const checkSeasonValid = Boolean(seasonName && seasonYear && seasonStartDate && seasonEndDate);
@@ -1013,7 +1080,7 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
             <div className="flex items-center gap-2 flex-wrap">
               <span className="font-black text-sm text-white">
                 {validationDiagnosis.isFullyCompliant
-                  ? 'CALENDÁRIO OFICIAL CORRIGIDO ESTRUTURALMENTE (30 JOGOS / 6 CLUBES)'
+                  ? `CALENDÁRIO OFICIAL CORRIGIDO ESTRUTURALMENTE (${validationDiagnosis.expectedTotalMatches} JOGOS / ${validationDiagnosis.effectiveClubsCount} CLUBES)`
                   : 'AUDITORIA E DIAGNÓSTICO DO CALENDÁRIO ATUAL'}
               </span>
               <span
@@ -1034,11 +1101,11 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
             <p className="text-xs text-slate-300 mt-1 leading-relaxed">
               {validationDiagnosis.isFullyCompliant ? (
                 <>
-                  Correção estrutural implementada com sucesso: <strong>30 partidas oficiais geradas</strong> em 10 rodadas (exatamente 3 partidas por rodada) envolvendo exclusivamente os 6 clubes oficiais (FM United, Real Football, Inter Tech, Porto Real, Santos Stars e Thales FC). Atlântico FC e Real Madrid eliminados. Mandos rigorosamente invertidos no 2º turno. <strong>Nenhuma partida foi processada, nenhuma rodada avançada, e os saldos/elencos foram 100% preservados. A temporada permanece em Rascunho para sua conferência prévia.</strong>
+                  Calendário regulamentar configurado com sucesso: <strong>{matches.length} partidas oficiais geradas</strong> em {validationDiagnosis.totalRounds} rodadas (exatamente {validationDiagnosis.expectedMatchesPerRound} partidas por rodada) com {validationDiagnosis.clubsInMatchesCount} clubes participantes. Mandos rigorosamente equilibrados e invertidos no 2º turno. <strong>A temporada permanece em Rascunho para sua conferência prévia.</strong>
                 </>
               ) : (
                 <>
-                  Auditoria estática realizada: O calendário atual contém divergências em relação ao formato oficial de 6 clubes. Execute a geração estrutural para aplicar os 30 jogos regulamentares.
+                  Auditoria de conformidade: O formato atual prevê {selectedClubIds.length} clubes selecionados ({metrics.totalMatches} jogos em {metrics.roundsCount} rodadas). Ajuste os participantes ou utilize o gerador automático com confirmação prévia.
                 </>
               )}
             </p>
@@ -1146,51 +1213,51 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
 
             {/* Grid de Métricas Gerais de Auditoria */}
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4 pt-2">
-              <div className={`p-4 rounded-xl bg-slate-950 border space-y-1 ${validationDiagnosis.is30Matches ? 'border-emerald-500/30' : 'border-rose-500/40'}`}>
+              <div className={`p-4 rounded-xl bg-slate-950 border space-y-1 ${validationDiagnosis.isMatchesCompliant ? 'border-emerald-500/30' : 'border-rose-500/40'}`}>
                 <div className="flex items-center justify-between">
                   <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Total de Partidas</span>
-                  <span className={`text-xs font-bold flex items-center gap-1 ${validationDiagnosis.is30Matches ? 'text-emerald-400' : 'text-rose-400'}`}>
-                    {validationDiagnosis.is30Matches ? <CheckCircle2 className="w-3.5 h-3.5" /> : <XCircle className="w-3.5 h-3.5" />}
-                    {validationDiagnosis.is30Matches ? '100% Conforme' : 'Incompleto'}
+                  <span className={`text-xs font-bold flex items-center gap-1 ${validationDiagnosis.isMatchesCompliant ? 'text-emerald-400' : 'text-rose-400'}`}>
+                    {validationDiagnosis.isMatchesCompliant ? <CheckCircle2 className="w-3.5 h-3.5" /> : <XCircle className="w-3.5 h-3.5" />}
+                    {validationDiagnosis.isMatchesCompliant ? '100% Conforme' : 'Incompleto'}
                   </span>
                 </div>
                 <div className="text-2xl font-black text-white tracking-tight">
-                  {matches.length} <span className="text-sm font-normal text-slate-500">/ 30 esperadas</span>
+                  {matches.length} <span className="text-sm font-normal text-slate-500">/ {validationDiagnosis.expectedTotalMatches} esperadas</span>
                 </div>
                 <p className="text-[11px] text-slate-400">
-                  {validationDiagnosis.is30Matches ? '15 partidas no 1º turno + 15 partidas no 2º turno.' : `Déficit de ${30 - matches.length} partidas.`}
+                  {validationDiagnosis.isMatchesCompliant ? `${validationDiagnosis.expectedTurnoMatches} partidas no 1º turno + ${validationDiagnosis.expectedTurnoMatches} partidas no 2º turno.` : `Déficit de ${Math.max(0, validationDiagnosis.expectedTotalMatches - matches.length)} partidas.`}
                 </p>
               </div>
 
-              <div className={`p-4 rounded-xl bg-slate-950 border space-y-1 ${validationDiagnosis.turnoMatchesCount === 15 ? 'border-emerald-500/30' : 'border-rose-500/40'}`}>
+              <div className={`p-4 rounded-xl bg-slate-950 border space-y-1 ${validationDiagnosis.turnoMatchesCount === validationDiagnosis.expectedTurnoMatches ? 'border-emerald-500/30' : 'border-rose-500/40'}`}>
                 <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">1º Turno (Rodadas 1 a 5)</span>
-                  <span className={`text-xs font-bold flex items-center gap-1 ${validationDiagnosis.turnoMatchesCount === 15 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                    {validationDiagnosis.turnoMatchesCount === 15 ? <CheckCircle2 className="w-3.5 h-3.5" /> : <XCircle className="w-3.5 h-3.5" />}
-                    {validationDiagnosis.turnoMatchesCount} / 15 jogos
+                  <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">1º Turno (Rodadas 1 a {validationDiagnosis.expectedTurnoRounds})</span>
+                  <span className={`text-xs font-bold flex items-center gap-1 ${validationDiagnosis.turnoMatchesCount === validationDiagnosis.expectedTurnoMatches ? 'text-emerald-400' : 'text-rose-400'}`}>
+                    {validationDiagnosis.turnoMatchesCount === validationDiagnosis.expectedTurnoMatches ? <CheckCircle2 className="w-3.5 h-3.5" /> : <XCircle className="w-3.5 h-3.5" />}
+                    {validationDiagnosis.turnoMatchesCount} / {validationDiagnosis.expectedTurnoMatches} jogos
                   </span>
                 </div>
-                <div className={`text-2xl font-black tracking-tight ${validationDiagnosis.turnoMatchesCount === 15 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                  {((validationDiagnosis.turnoMatchesCount / 15) * 100).toFixed(1)}% <span className="text-sm font-normal text-slate-500">concluído</span>
+                <div className={`text-2xl font-black tracking-tight ${validationDiagnosis.turnoMatchesCount === validationDiagnosis.expectedTurnoMatches ? 'text-emerald-400' : 'text-rose-400'}`}>
+                  {((validationDiagnosis.turnoMatchesCount / (validationDiagnosis.expectedTurnoMatches || 1)) * 100).toFixed(1)}% <span className="text-sm font-normal text-slate-500">concluído</span>
                 </div>
                 <p className="text-[11px] text-slate-400">
-                  {validationDiagnosis.turnoMatchesCount === 15 ? 'Exatamente 3 partidas por rodada nas Rodadas 1 a 5.' : 'Apenas 1 jogo cadastrado por rodada nas Rodadas 1 a 4.'}
+                  {validationDiagnosis.turnoMatchesCount === validationDiagnosis.expectedTurnoMatches ? `Exatamente ${validationDiagnosis.expectedMatchesPerRound} partidas por rodada nas Rodadas 1 a ${validationDiagnosis.expectedTurnoRounds}.` : `Aguardando distribuição completa de ${validationDiagnosis.expectedMatchesPerRound} jogos por rodada.`}
                 </p>
               </div>
 
-              <div className={`p-4 rounded-xl bg-slate-950 border space-y-1 ${validationDiagnosis.returnoMatchesCount === 15 ? 'border-emerald-500/30' : 'border-rose-500/40'}`}>
+              <div className={`p-4 rounded-xl bg-slate-950 border space-y-1 ${validationDiagnosis.returnoMatchesCount === validationDiagnosis.expectedTurnoMatches ? 'border-emerald-500/30' : 'border-rose-500/40'}`}>
                 <div className="flex items-center justify-between">
-                  <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">2º Turno (Rodadas 6 a 10)</span>
-                  <span className={`text-xs font-bold flex items-center gap-1 ${validationDiagnosis.returnoMatchesCount === 15 ? 'text-emerald-400' : 'text-rose-400'}`}>
-                    {validationDiagnosis.returnoMatchesCount === 15 ? <CheckCircle2 className="w-3.5 h-3.5" /> : <AlertTriangle className="w-3.5 h-3.5" />}
-                    {validationDiagnosis.returnoMatchesCount} / 15 jogos
+                  <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">2º Turno (Rodadas {validationDiagnosis.expectedTurnoRounds + 1} a {validationDiagnosis.expectedTotalRounds})</span>
+                  <span className={`text-xs font-bold flex items-center gap-1 ${validationDiagnosis.returnoMatchesCount === validationDiagnosis.expectedTurnoMatches ? 'text-emerald-400' : 'text-rose-400'}`}>
+                    {validationDiagnosis.returnoMatchesCount === validationDiagnosis.expectedTurnoMatches ? <CheckCircle2 className="w-3.5 h-3.5" /> : <AlertTriangle className="w-3.5 h-3.5" />}
+                    {validationDiagnosis.returnoMatchesCount} / {validationDiagnosis.expectedTurnoMatches} jogos
                   </span>
                 </div>
                 <div className="text-2xl font-black text-emerald-400 tracking-tight">
-                  {((validationDiagnosis.returnoMatchesCount / 15) * 100).toFixed(1)}% <span className="text-sm font-normal text-slate-500">quantitativo</span>
+                  {((validationDiagnosis.returnoMatchesCount / (validationDiagnosis.expectedTurnoMatches || 1)) * 100).toFixed(1)}% <span className="text-sm font-normal text-slate-500">quantitativo</span>
                 </div>
                 <p className="text-[11px] text-slate-400">
-                  {validationDiagnosis.inversionErrorsCount === 0 ? 'Exatamente 3 partidas por rodada com mandos invertidos.' : 'Quantidade completa, porém com falha de inversão de mando.'}
+                  {validationDiagnosis.inversionErrorsCount === 0 ? `Exatamente ${validationDiagnosis.expectedMatchesPerRound} partidas por rodada com mandos invertidos.` : 'Quantidade completa, porém com falha de inversão de mando.'}
                 </p>
               </div>
 
@@ -1215,14 +1282,14 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
                   <span className="text-[11px] font-bold text-slate-400 uppercase tracking-wider">Participantes Oficiais</span>
                   <span className={`text-xs font-bold flex items-center gap-1 ${!validationDiagnosis.hasBannedClub ? 'text-emerald-400' : 'text-rose-400'}`}>
                     {!validationDiagnosis.hasBannedClub ? <CheckCircle2 className="w-3.5 h-3.5" /> : <AlertCircle className="w-3.5 h-3.5" />}
-                    {!validationDiagnosis.hasBannedClub ? '6 Clubes Homologados' : 'Clube Irregular'}
+                    {!validationDiagnosis.hasBannedClub ? `${validationDiagnosis.effectiveClubsCount} Clubes Homologáveis` : 'Clube Irregular'}
                   </span>
                 </div>
                 <div className="text-2xl font-black text-white tracking-tight">
-                  6 <span className="text-sm font-normal text-slate-500">oficiais</span>
+                  {validationDiagnosis.effectiveClubsCount} <span className="text-sm font-normal text-slate-500">clubes</span>
                 </div>
                 <p className="text-[11px] text-slate-400">
-                  {!validationDiagnosis.hasBannedClub ? 'FM United, Real Football, Inter Tech, Porto Real, Santos Stars e Thales FC.' : 'Atlântico FC (não homologado) detectado.'}
+                  {!validationDiagnosis.hasBannedClub ? 'Exclusivamente os clubes selecionados pelo administrador.' : 'Clube irregular não homologado detectado.'}
                 </p>
               </div>
 
@@ -1238,7 +1305,7 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
                   {validationDiagnosis.inversionErrorsCount === 0 ? '100% Invertido' : `${validationDiagnosis.inversionErrorsCount} Erro(s)`}
                 </div>
                 <p className="text-[11px] text-slate-400">
-                  {validationDiagnosis.inversionErrorsCount === 0 ? 'Todos os 15 confrontos do returno invertem rigorosamente o mando do 1º turno.' : 'Existe falha de inversão de mando entre turnos.'}
+                  {validationDiagnosis.inversionErrorsCount === 0 ? `Todos os ${validationDiagnosis.expectedTurnoMatches} confrontos do returno invertem rigorosamente o mando do 1º turno.` : 'Existe falha de inversão de mando entre turnos.'}
                 </p>
               </div>
             </div>
@@ -1252,10 +1319,10 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
               </div>
               <div>
                 <h3 className="text-sm font-black text-white">
-                  Auditoria Matemática: Quantidade de Jogos no Turno e Returno para 6 Clubes
+                  Auditoria Matemática: Quantidade de Jogos no Turno e Returno ({validationDiagnosis.effectiveClubsCount} Clubes)
                 </h3>
                 <p className="text-xs text-slate-400">
-                  Verificação da premissa de &quot;30 jogos previstos para o turno e 30 jogos do returno&quot;
+                  Cálculo canônico para torneio com {validationDiagnosis.effectiveClubsCount} equipes em {compLegs === 'TURNO_E_RETURNO' ? 'Turno e Returno' : 'Turno Único'}
                 </p>
               </div>
             </div>
@@ -1267,35 +1334,35 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
                   <span>Cálculo Combinatório Oficial (Regra FIFA / Berger)</span>
                 </div>
                 <p>
-                  Para qualquer liga com <strong>N = 6 clubes</strong> disputada no formato Todos Contra Todos:
+                  Para qualquer liga com <strong>N = {validationDiagnosis.effectiveClubsCount} clubes</strong> disputada no formato Todos Contra Todos:
                 </p>
                 <div className="p-3 bg-slate-900 rounded-lg font-mono text-[11px] text-amber-300 border border-slate-800 space-y-1">
-                  <div>• Confrontos únicos por turno: C(6, 2) = (6 × 5) / 2 = <strong>15 jogos</strong></div>
-                  <div>• Partidas simultâneas por rodada: 6 / 2 = <strong>3 jogos</strong></div>
-                  <div>• Rodadas necessárias por turno: 15 / 3 = <strong>5 rodadas</strong></div>
-                  <div>• 1º Turno (Rodadas 1 a 5): 5 rodadas × 3 jogos = <strong>15 jogos</strong></div>
-                  <div>• 2º Turno (Rodadas 6 a 10): 5 rodadas × 3 jogos = <strong>15 jogos</strong></div>
-                  <div>• <strong>TOTAL DA TEMPORADA (Turno + Returno): 15 + 15 = 30 JOGOS NO TOTAL</strong></div>
+                  <div>• Confrontos únicos por turno: C({validationDiagnosis.effectiveClubsCount}, 2) = ({validationDiagnosis.effectiveClubsCount} × {validationDiagnosis.effectiveClubsCount - 1}) / 2 = <strong>{validationDiagnosis.expectedTurnoMatches} jogos</strong></div>
+                  <div>• Partidas simultâneas por rodada: {validationDiagnosis.effectiveClubsCount} / 2 = <strong>{validationDiagnosis.expectedMatchesPerRound} jogos</strong></div>
+                  <div>• Rodadas necessárias por turno: {validationDiagnosis.expectedTurnoMatches} / {validationDiagnosis.expectedMatchesPerRound} = <strong>{validationDiagnosis.expectedTurnoRounds} rodadas</strong></div>
+                  <div>• 1º Turno (Rodadas 1 a {validationDiagnosis.expectedTurnoRounds}): {validationDiagnosis.expectedTurnoRounds} rodadas × {validationDiagnosis.expectedMatchesPerRound} jogos = <strong>{validationDiagnosis.expectedTurnoMatches} jogos</strong></div>
+                  <div>• 2º Turno (Rodadas {validationDiagnosis.expectedTurnoRounds + 1} a {validationDiagnosis.expectedTotalRounds}): {validationDiagnosis.expectedTurnoRounds} rodadas × {validationDiagnosis.expectedMatchesPerRound} jogos = <strong>{validationDiagnosis.expectedTurnoMatches} jogos</strong></div>
+                  <div>• <strong>TOTAL DA TEMPORADA (Turno + Returno): {validationDiagnosis.expectedTurnoMatches} + {validationDiagnosis.expectedTurnoMatches} = {validationDiagnosis.expectedTotalMatches} JOGOS NO TOTAL</strong></div>
                 </div>
               </div>
 
               <div className="space-y-3 bg-slate-950 p-4 rounded-xl border border-slate-800">
-                <div className="font-bold text-rose-400 flex items-center gap-2">
-                  <AlertTriangle className="w-4 h-4" />
-                  <span>Diagnóstico da Premissa &quot;30 Jogos no Turno e 30 no Returno&quot;</span>
+                <div className="font-bold text-emerald-400 flex items-center gap-2">
+                  <CheckCircle2 className="w-4 h-4" />
+                  <span>Equilíbrio de Mandos e Distribuição</span>
                 </div>
                 <p>
-                  A previsão de 30 jogos no turno e 30 no returno (totalizando 60 partidas) <strong>é matematicamente impossível para 6 clubes em turno e returno padrão</strong>:
+                  Propriedades matemáticas garantidas no sistema de pontos corridos para {validationDiagnosis.effectiveClubsCount} clubes:
                 </p>
                 <ul className="list-disc list-inside space-y-1.5 text-slate-400">
                   <li>
-                    Se houvesse 30 jogos no 1º turno com apenas 6 clubes, cada clube jogaria <strong>10 partidas apenas no turno</strong>, o que significaria enfrentar cada adversário 2 vezes no próprio primeiro turno (o que caracterizaria um turno duplo ou 4 turnos no ano).
+                    Cada equipe joga exatamente <strong>{validationDiagnosis.expectedHomeMatches + validationDiagnosis.expectedAwayMatches} partidas oficiais</strong> ({validationDiagnosis.expectedHomeMatches} em casa e {validationDiagnosis.expectedAwayMatches} fora).
                   </li>
                   <li>
-                    Para uma liga ter 30 jogos em 1 único turno sem repetição, seriam necessários <strong>ao menos 8 ou 9 clubes</strong> (ou 60 jogos com 13 clubes).
+                    Todo clube enfrenta cada adversário <strong>exatamente 1 vez por turno</strong> e <strong>2 vezes no campeonato (ida e volta)</strong>.
                   </li>
                   <li>
-                    <strong>Conclusão da Auditoria:</strong> O total correto, coerente e homologável para 6 clubes em turno e returno é <strong>15 partidas no 1º Turno + 15 partidas no 2º Turno = 30 partidas no TOTAL da temporada</strong>. O calendário atual tem apenas 22 (faltam 8 jogos para atingir as 30 partidas oficiais).
+                    <strong>Conclusão da Auditoria:</strong> O total canônico e homologável para {validationDiagnosis.effectiveClubsCount} clubes em turno e returno é <strong>{validationDiagnosis.expectedTurnoMatches} partidas no 1º Turno + {validationDiagnosis.expectedTurnoMatches} partidas no 2º Turno = {validationDiagnosis.expectedTotalMatches} partidas no TOTAL</strong> ({validationDiagnosis.expectedMatchesPerRound} partidas por rodada).
                   </li>
                 </ul>
               </div>
@@ -1857,10 +1924,6 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
                 onChange={(e) => {
                   const val = e.target.value as 'TURNO_E_RETURNO' | 'TURNO_UNICO';
                   setCompLegs(val);
-                  if (selectedClubIds.length >= 2) {
-                    const r = val === 'TURNO_E_RETURNO' ? (selectedClubIds.length - 1) * 2 : selectedClubIds.length - 1;
-                    setCompRoundsCount(r);
-                  }
                 }}
                 disabled={isHomologated}
                 className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm text-white focus:outline-none focus:border-amber-500 disabled:opacity-60"
@@ -1881,14 +1944,22 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
                 disabled={isHomologated}
                 className="w-full bg-slate-950 border border-slate-800 rounded-xl px-3.5 py-2.5 text-sm font-mono text-white focus:outline-none focus:border-amber-500 disabled:opacity-60"
               />
-              <p className="text-[11px] text-slate-500">
-                Cálculo recomendado com {selectedClubIds.length} clubes:{' '}
-                <span className="font-bold text-amber-400">
-                  {selectedClubIds.length >= 2
-                    ? `${compLegs === 'TURNO_E_RETURNO' ? (selectedClubIds.length - 1) * 2 : selectedClubIds.length - 1} rodadas`
-                    : 'Aguardando seleção de clubes'}
-                </span>
-              </p>
+              <div className="p-3 bg-slate-950 rounded-xl border border-slate-800 text-[11px] text-slate-400 space-y-1">
+                <div className="flex items-center justify-between">
+                  <span className="font-bold text-amber-400 flex items-center gap-1">
+                    <Calculator className="w-3.5 h-3.5" />
+                    Cálculo Automático Regulamentar:
+                  </span>
+                  <span className="text-white font-mono font-bold">
+                    {metrics.clubsCount} clubes • {metrics.roundsCount} rodadas • {metrics.totalMatches} jogos
+                  </span>
+                </div>
+                <div className="text-slate-400">
+                  {compLegs === 'TURNO_E_RETURNO'
+                    ? `${metrics.roundsCount / 2} rodadas de ida + ${metrics.roundsCount / 2} rodadas de volta (${metrics.matchesPerRound} jogos por rodada). Equilíbrio de mandos: cada clube joga ${metrics.homeMatchesPerClub} em casa e ${metrics.awayMatchesPerClub} fora.`
+                    : `${metrics.roundsCount} rodadas de turno único (${metrics.matchesPerRound} jogos por rodada).`}
+                </div>
+              </div>
             </div>
           </div>
 
@@ -1922,12 +1993,19 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
                 <span>Clubes Participantes Inscritos</span>
               </h2>
               <p className="text-xs text-slate-400 mt-0.5">
-                Selecione os clubes reais cadastrados no FM Universe para disputar a temporada.
+                Selecione os clubes ativos vinculados a Managers cadastrados no FM Universe para disputar a temporada.
               </p>
             </div>
 
             {!isHomologated && (
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 flex-wrap">
+                <button
+                  onClick={handleSelect10Clubs}
+                  className="px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-300 text-xs font-bold border border-amber-500/40 cursor-pointer flex items-center gap-1.5 transition-colors"
+                >
+                  <Sparkles className="w-3.5 h-3.5 text-amber-400" />
+                  <span>Selecionar 10 Clubes (Teste Oficial)</span>
+                </button>
                 <button
                   onClick={handleSelectAllClubs}
                   className="px-3 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold border border-slate-700 cursor-pointer"
@@ -1944,10 +2022,60 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
             )}
           </div>
 
+          {/* Card de Cálculo Automático das Métricas da Disputa */}
+          <div className="bg-slate-950 p-4 rounded-xl border border-amber-500/30 space-y-3">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2 border-b border-slate-800/80 pb-2.5">
+              <div className="flex items-center gap-2">
+                <Calculator className="w-4 h-4 text-amber-400" />
+                <span className="text-xs font-bold text-white uppercase tracking-wider">
+                  Cálculo Automático Regulamentar
+                </span>
+                <span className="text-[10px] font-mono px-2 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30 font-bold">
+                  {selectedClubIds.length} Clubes Selecionados
+                </span>
+              </div>
+              <span className="text-[11px] text-slate-400 font-mono">
+                Fórmula: Pontos Corridos ({compLegs === 'TURNO_E_RETURNO' ? 'Turno e Returno (Ida e Volta)' : 'Turno Único'})
+              </span>
+            </div>
+
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-center">
+              <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800">
+                <span className="text-[10px] font-bold text-slate-400 uppercase block">Número de Rodadas</span>
+                <span className="text-lg font-black text-amber-400 font-mono">{metrics.roundsCount}</span>
+                <span className="text-[10px] text-slate-500 block">
+                  {compLegs === 'TURNO_E_RETURNO' ? `${metrics.roundsCount / 2} ida + ${metrics.roundsCount / 2} volta` : 'rodadas'}
+                </span>
+              </div>
+
+              <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800">
+                <span className="text-[10px] font-bold text-slate-400 uppercase block">Partidas por Rodada</span>
+                <span className="text-lg font-black text-amber-400 font-mono">{metrics.matchesPerRound}</span>
+                <span className="text-[10px] text-slate-500 block">jogos simultâneos</span>
+              </div>
+
+              <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800">
+                <span className="text-[10px] font-bold text-slate-400 uppercase block">Total de Partidas</span>
+                <span className="text-lg font-black text-emerald-400 font-mono">{metrics.totalMatches}</span>
+                <span className="text-[10px] text-slate-500 block">confrontos oficiais</span>
+              </div>
+
+              <div className="p-2.5 rounded-lg bg-slate-900 border border-slate-800">
+                <span className="text-[10px] font-bold text-slate-400 uppercase block">Equilíbrio de Mandos</span>
+                <span className="text-lg font-black text-sky-400 font-mono">
+                  {metrics.homeMatchesPerClub}C / {metrics.awayMatchesPerClub}F
+                </span>
+                <span className="text-[10px] text-slate-500 block">
+                  {metrics.homeMatchesPerClub + metrics.awayMatchesPerClub} jogos cada clube
+                </span>
+              </div>
+            </div>
+          </div>
+
           <div className="bg-slate-950 p-3.5 rounded-xl border border-slate-800 flex items-center justify-between">
             <span className="text-xs text-slate-400">
               Total de clubes selecionados:{' '}
-              <strong className="text-white font-mono text-sm">{selectedClubIds.length}</strong> de {allClubs.length}
+              <strong className="text-white font-mono text-sm">{selectedClubIds.length}</strong> de {allClubs.length} clubes com Manager
             </span>
             {selectedClubIds.length < 2 && (
               <span className="text-xs text-rose-400 font-bold flex items-center gap-1">
@@ -1960,7 +2088,16 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
           <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {allClubs.map((club) => {
               const isSelected = selectedClubIds.includes(club.id);
-              const isManagerClub = club.name.includes('Thales') || club.id === 'club-qowYWnG0EfUqrr1a5cHlu4UYmNB3';
+              const linkedManager = managers.find(
+                (m) =>
+                  (m.status === 'ACTIVE' || !m.status) &&
+                  (m.clubId === club.id ||
+                    m.clubId === club.slug ||
+                    (club.managerId && (m.uid === club.managerId || m.login === club.managerId)) ||
+                    club.id === `club-${m.uid}` ||
+                    club.id === m.uid)
+              );
+              const managerDisplayName = linkedManager?.name || club.managerName || 'Manager Cadastrado';
 
               return (
                 <div
@@ -1983,11 +2120,10 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
                     <div>
                       <div className="flex items-center gap-1.5 flex-wrap">
                         <span className="font-bold text-xs text-white">{club.name}</span>
-                        {isManagerClub && (
-                          <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30">
-                            Clube do Manager
-                          </span>
-                        )}
+                        <span className="text-[9px] font-bold px-1.5 py-0.5 rounded bg-purple-500/20 text-purple-300 border border-purple-500/30 flex items-center gap-1">
+                          <ShieldCheck className="w-2.5 h-2.5 text-purple-400" />
+                          <span>{managerDisplayName}</span>
+                        </span>
                       </div>
                       <span className="text-[10px] text-slate-400 flex items-center gap-1 mt-0.5">
                         <MapPin className="w-3 h-3 text-slate-500" />
@@ -2006,6 +2142,12 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
                 </div>
               );
             })}
+
+            {allClubs.length === 0 && (
+              <div className="col-span-full p-8 text-center bg-slate-950/60 rounded-xl border border-slate-800 text-slate-400 text-xs">
+                Nenhum clube ativo com Manager cadastrado encontrado no sistema. Cadastre novos Managers no módulo de Gestão de Managers para vincular clubes à liga.
+              </div>
+            )}
           </div>
 
           <div className="flex justify-between pt-2">
@@ -2046,7 +2188,7 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
               <div className="flex items-center gap-2 flex-wrap">
                 <button
                   id="admin-btn-generate-calendar"
-                  onClick={handleGenerateCalendar}
+                  onClick={handleOpenGenerateCalendarModal}
                   disabled={loading || selectedClubIds.length < 2}
                   className="px-3.5 py-2 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-black flex items-center gap-1.5 transition-all shadow-md cursor-pointer disabled:opacity-50"
                 >
@@ -2074,7 +2216,7 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
             )}
           </div>
 
-          {/* Painel de Diagnóstico de Validação Regulamentar do Calendário Corrigido */}
+          {/* Painel de Diagnóstico de Validação Regulamentar do Calendário */}
           <div className="p-5 rounded-2xl bg-slate-950 border border-emerald-500/40 space-y-4">
             <div className="flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-slate-800 pb-3">
               <div className="flex items-center gap-2.5">
@@ -2083,20 +2225,20 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
                 </div>
                 <div>
                   <h3 className="text-sm font-black text-white flex items-center gap-2">
-                    <span>Diagnóstico de Validação Regulamentar (Calendário Oficial Corrigido)</span>
+                    <span>Diagnóstico de Validação Regulamentar</span>
                   </h3>
                   <p className="text-[11px] text-slate-400">
-                    Conformidade com a fórmula canônica Round-Robin de Turno e Returno para 6 clubes
+                    Conformidade com a fórmula canônica Round-Robin de {compLegs === 'TURNO_E_RETURNO' ? 'Turno e Returno' : 'Turno Único'} para {selectedClubIds.length} clubes
                   </p>
                 </div>
               </div>
               <div className="flex items-center gap-2 flex-wrap">
                 <span className="text-[10px] font-mono px-2.5 py-1 rounded-full bg-emerald-500/20 text-emerald-300 border border-emerald-500/40 font-bold flex items-center gap-1">
                   <CheckCircle2 className="w-3 h-3" />
-                  100% REGULAMENTAR & CONFORME
+                  {validationDiagnosis.isFullyCompliant ? '100% REGULAMENTAR & CONFORME' : 'AGUARDANDO GERAÇÃO/AJUSTE'}
                 </span>
                 <span className="text-[10px] font-mono px-2.5 py-1 rounded-full bg-slate-900 text-amber-300 border border-amber-500/30 font-bold">
-                  RASCUNHO • NÃO HOMOLOGADO AINDA
+                  {isHomologated ? 'HOMOLOGADO' : 'RASCUNHO • NÃO HOMOLOGADO AINDA'}
                 </span>
               </div>
             </div>
@@ -2105,25 +2247,25 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
               <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
                 <span className="text-[10px] font-bold text-slate-400 uppercase">Partidas Totais</span>
                 <div className="text-base font-black text-emerald-400">
-                  {matches.length} <span className="text-[10px] font-normal text-slate-500">/ 30 esperadas</span>
+                  {matches.length} <span className="text-[10px] font-normal text-slate-500">/ {validationDiagnosis.expectedTotalMatches} esperadas</span>
                 </div>
-                <p className="text-[10px] text-slate-400">15 no Turno + 15 no Returno</p>
+                <p className="text-[10px] text-slate-400">{validationDiagnosis.expectedTurnoMatches} Turno + {validationDiagnosis.expectedTurnoMatches} Returno</p>
               </div>
 
               <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
                 <span className="text-[10px] font-bold text-slate-400 uppercase">Rodadas</span>
                 <div className="text-base font-black text-emerald-400">
-                  10 <span className="text-[10px] font-normal text-slate-500">rodadas</span>
+                  {validationDiagnosis.totalRounds} <span className="text-[10px] font-normal text-slate-500">/ {validationDiagnosis.expectedTotalRounds} rodadas</span>
                 </div>
-                <p className="text-[10px] text-slate-400">Exatamente 3 jogos por rodada</p>
+                <p className="text-[10px] text-slate-400">Exatamente {validationDiagnosis.expectedMatchesPerRound} jogos por rodada</p>
               </div>
 
               <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
                 <span className="text-[10px] font-bold text-slate-400 uppercase">Participantes</span>
                 <div className="text-base font-black text-emerald-400">
-                  6 <span className="text-[10px] font-normal text-slate-500">clubes</span>
+                  {validationDiagnosis.clubsInMatchesCount || selectedClubIds.length} <span className="text-[10px] font-normal text-slate-500">clubes</span>
                 </div>
-                <p className="text-[10px] text-slate-400">Exclusivamente os 6 oficiais</p>
+                <p className="text-[10px] text-slate-400">Exclusivamente clubes selecionados</p>
               </div>
 
               <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
@@ -2137,15 +2279,15 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
               <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
                 <span className="text-[10px] font-bold text-slate-400 uppercase">Inversão de Mando</span>
                 <div className="text-base font-black text-emerald-400">
-                  100% <span className="text-[10px] font-normal text-slate-500">conforme</span>
+                  {validationDiagnosis.inversionErrorsCount === 0 ? '100%' : 'Falha'} <span className="text-[10px] font-normal text-slate-500">conforme</span>
                 </div>
-                <p className="text-[10px] text-slate-400">R1 a R5 invertidos em R6 a R10</p>
+                <p className="text-[10px] text-slate-400">Mandos invertidos no Returno</p>
               </div>
 
               <div className="p-3 rounded-xl bg-slate-900 border border-slate-800 space-y-1">
                 <span className="text-[10px] font-bold text-slate-400 uppercase">Balanço de Mandos</span>
                 <div className="text-base font-black text-emerald-400">
-                  5 Casa / 5 Fora
+                  {validationDiagnosis.expectedHomeMatches} Casa / {validationDiagnosis.expectedAwayMatches} Fora
                 </div>
                 <p className="text-[10px] text-slate-400">Equilíbrio perfeito p/ cada clube</p>
               </div>
@@ -2280,12 +2422,12 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
                         : 'bg-slate-900 text-slate-400 hover:text-white border border-slate-800'
                     }`}
                   >
-                    <span>Ver Todas as 10 Rodadas ({matches.length} Jogos)</span>
+                    <span>Ver Todas as {availableRounds.length} Rodadas ({matches.length} Jogos)</span>
                   </button>
                 </div>
                 <div className="text-xs text-slate-400 font-mono">
                   {showAllRounds ? (
-                    <span>Exibindo a tabela com as <strong className="text-amber-400">10 rodadas e {matches.length} confrontos oficiais</strong></span>
+                    <span>Exibindo a tabela com as <strong className="text-amber-400">{availableRounds.length} rodadas e {matches.length} confrontos oficiais</strong></span>
                   ) : (
                     <span>Exibindo <strong className="text-amber-400">Rodada {selectedRoundFilter}</strong> ({filteredMatches.length} jogos)</span>
                   )}
@@ -2307,7 +2449,7 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
                     >
                       <span>Rodada {r}</span>
                       <span className="text-[10px] opacity-75">
-                        {r <= 5 ? '(1ºT)' : '(2ºT)'}
+                        {r <= Math.ceil(availableRounds.length / 2) ? '(1ºT)' : '(2ºT)'}
                       </span>
                     </button>
                   ))}
@@ -2316,13 +2458,13 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
 
               {/* Renderização das Partidas */}
               {showAllRounds ? (
-                /* Modo: Todas as 10 Rodadas Agrupadas */
+                /* Modo: Todas as Rodadas Agrupadas */
                 <div className="space-y-6">
                   {availableRounds.map((roundNum) => {
                     const roundMatches = matches.filter(
                       (m) => Number(m.round || m.rodada || 1) === roundNum
                     );
-                    const isTurno = roundNum <= 5;
+                    const isTurno = roundNum <= Math.ceil(availableRounds.length / 2);
 
                     return (
                       <div
@@ -2339,7 +2481,7 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
                             </span>
                           </div>
                           <span className="text-[11px] font-mono text-emerald-400 font-bold">
-                            {roundMatches.length} partidas • 6 clubes
+                            {roundMatches.length} partidas • {roundMatches.length * 2} clubes
                           </span>
                         </div>
 
@@ -3030,6 +3172,130 @@ export const AdminCampeonatosTemporadasPage: React.FC = () => {
                 className="w-1/2 py-2.5 rounded-xl bg-amber-600 hover:bg-amber-500 text-slate-950 font-black text-xs cursor-pointer"
               >
                 Reverter para Rascunho
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* ======================================================== */}
+      {/* MODAL DE CONFIRMAÇÃO DE GERAÇÃO DO CALENDÁRIO */}
+      {/* ======================================================== */}
+      {showGenerationConfirmModal && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-amber-500/50 rounded-2xl max-w-lg w-full p-6 space-y-5 shadow-2xl animate-fadeIn relative">
+            <div className="flex items-start justify-between gap-4 border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-3">
+                <div className="w-10 h-10 rounded-xl bg-amber-500/20 border border-amber-500/30 flex items-center justify-center text-amber-400 shrink-0">
+                  <Sparkles className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">
+                    Confirmação de Geração do Calendário
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Verifique os parâmetros calculados antes de criar as partidas oficiais.
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setShowGenerationConfirmModal(false)}
+                className="text-slate-400 hover:text-white p-1 rounded-lg hover:bg-slate-800 transition-colors cursor-pointer"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            {/* Destaque Obrigatório: Clubes: X | Rodadas: X | Jogos: X */}
+            <div className="p-4 rounded-xl bg-gradient-to-r from-amber-500/15 to-amber-600/10 border-2 border-amber-500/60 text-center space-y-1 shadow-inner">
+              <span className="text-[10px] font-bold text-amber-400 uppercase tracking-widest block">
+                Resumo Regulamentar Oficial
+              </span>
+              <div className="text-xl sm:text-2xl font-black text-amber-300 font-mono tracking-wide">
+                Clubes: {metrics.clubsCount} | Rodadas: {metrics.roundsCount} | Jogos: {metrics.totalMatches}
+              </div>
+            </div>
+
+            {/* Detalhamento das Regras da Disputa */}
+            <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-2.5 text-xs">
+              <div className="flex justify-between py-1 border-b border-slate-900">
+                <span className="text-slate-400">Fórmula de Disputa:</span>
+                <span className="font-bold text-white">
+                  Pontos Corridos ({compLegs === 'TURNO_E_RETURNO' ? 'Turno e Returno (Ida e Volta)' : 'Turno Único'})
+                </span>
+              </div>
+              <div className="flex justify-between py-1 border-b border-slate-900">
+                <span className="text-slate-400">Clubes Selecionados:</span>
+                <span className="font-bold text-amber-400 font-mono">{metrics.clubsCount} clubes</span>
+              </div>
+              <div className="flex justify-between py-1 border-b border-slate-900">
+                <span className="text-slate-400">Número de Rodadas:</span>
+                <span className="font-bold text-white font-mono">
+                  {metrics.roundsCount} rodadas ({compLegs === 'TURNO_E_RETURNO' ? `${metrics.roundsCount / 2} ida + ${metrics.roundsCount / 2} volta` : `${metrics.roundsCount} rodadas`})
+                </span>
+              </div>
+              <div className="flex justify-between py-1 border-b border-slate-900">
+                <span className="text-slate-400">Partidas por Rodada:</span>
+                <span className="font-bold text-white font-mono">{metrics.matchesPerRound} partidas por rodada</span>
+              </div>
+              <div className="flex justify-between py-1 border-b border-slate-900">
+                <span className="text-slate-400">Total de Partidas:</span>
+                <span className="font-bold text-emerald-400 font-mono">{metrics.totalMatches} partidas oficiais</span>
+              </div>
+              <div className="flex justify-between py-1">
+                <span className="text-slate-400">Equilíbrio de Mandos:</span>
+                <span className="font-bold text-sky-400 font-mono">
+                  {metrics.homeMatchesPerClub + metrics.awayMatchesPerClub} partidas por clube ({metrics.homeMatchesPerClub} como mandante e {metrics.awayMatchesPerClub} como visitante)
+                </span>
+              </div>
+            </div>
+
+            {/* Lista dos Clubes Selecionados */}
+            <div className="space-y-1.5">
+              <span className="text-[11px] font-bold text-slate-400 uppercase">
+                Clubes Selecionados ({selectedClubIds.length}):
+              </span>
+              <div className="max-h-28 overflow-y-auto p-2 bg-slate-950 rounded-lg border border-slate-800 flex flex-wrap gap-1.5">
+                {selectedClubIds.map((id) => {
+                  const club = allClubs.find((c) => c.id === id);
+                  return (
+                    <span
+                      key={id}
+                      className="text-[10px] font-bold px-2 py-0.5 rounded bg-slate-900 text-slate-300 border border-slate-800 flex items-center gap-1"
+                    >
+                      <span>{club?.badge || '🛡️'}</span>
+                      <span>{club?.name || id}</span>
+                    </span>
+                  );
+                })}
+              </div>
+            </div>
+
+            {/* Ações */}
+            <div className="flex items-center justify-end gap-3 pt-2">
+              <button
+                type="button"
+                onClick={() => setShowGenerationConfirmModal(false)}
+                disabled={loading}
+                className="px-4 py-2.5 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold text-xs cursor-pointer transition-colors"
+              >
+                Cancelar
+              </button>
+              <button
+                type="button"
+                id="admin-btn-confirm-generation"
+                onClick={handleConfirmGenerateCalendar}
+                disabled={loading}
+                className="px-5 py-2.5 rounded-xl bg-amber-500 hover:bg-amber-400 text-slate-950 font-black text-xs flex items-center gap-2 shadow-lg transition-all cursor-pointer disabled:opacity-50"
+              >
+                {loading ? (
+                  <span>Gerando Partidas...</span>
+                ) : (
+                  <>
+                    <CheckCircle2 className="w-4 h-4" />
+                    <span>Confirmar Geração</span>
+                  </>
+                )}
               </button>
             </div>
           </div>

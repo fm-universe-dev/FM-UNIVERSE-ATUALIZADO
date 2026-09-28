@@ -2,6 +2,7 @@ import { Match, Competition, Club } from '../types';
 import { jogosService } from './jogosService';
 import { competicoesService } from './competicoesService';
 import { participantesService } from './participantesService';
+import { dataStore } from './dataStore';
 
 export interface CalendarGenerationOptions {
   competitionId: string;
@@ -12,55 +13,61 @@ export interface CalendarGenerationOptions {
   allowAdministrativeRevision?: boolean;
 }
 
-// Club IDs explicitamente permitidos na competição oficial (6 clubes)
-const ALLOWED_CLUB_IDS = [
-  'club-1', // FM United
-  'club-2', // Real Football
-  'club-3', // Inter Tech
-  'club-4', // Porto Real
-  'club-5', // Santos Stars
-  'club-qowYWnG0EfUqrr1a5cHlu4UYmNB3', // Thales FC
-];
+export interface CalendarMetrics {
+  clubsCount: number;
+  roundsCount: number;
+  matchesPerRound: number;
+  totalMatches: number;
+  homeMatchesPerClub: number;
+  awayMatchesPerClub: number;
+  isEven: boolean;
+  legs: 'TURNO_E_RETURNO' | 'TURNO_UNICO';
+}
 
-// Nomes ou IDs de clubes que NÃO podem constar no calendário
-const BANNED_CLUB_IDENTIFIERS = [
-  'atlético fc',
-  'atletico fc',
-  'atlântico fc',
-  'atlantico fc',
-  'real madrid',
-  'club-6',
-  'club-real-madrid',
-];
+/**
+ * Calcula metricamente as estatísticas de um calendário de pontos corridos (todos contra todos)
+ */
+export function calculateCalendarMetrics(
+  clubsCount: number,
+  legs: 'TURNO_E_RETURNO' | 'TURNO_UNICO' = 'TURNO_E_RETURNO'
+): CalendarMetrics {
+  const isEven = clubsCount % 2 === 0;
+  const effectiveCount = isEven ? clubsCount : clubsCount + 1;
+  const roundsTurno = effectiveCount - 1;
+  const roundsCount = legs === 'TURNO_E_RETURNO' ? roundsTurno * 2 : roundsTurno;
+  const matchesPerRound = Math.floor(clubsCount / 2);
+  const totalMatches = roundsCount * matchesPerRound;
 
-// Tabela Canônica Berger para 6 clubes (0 a 5)
-// 5 rodadas no 1º turno, 3 jogos por rodada
-const CANONICAL_BERGER_6: [number, number][][] = [
-  // Rodada 1: C0 x C5, C1 x C4, C2 x C3
-  [[0, 5], [1, 4], [2, 3]],
-  // Rodada 2: C5 x C3, C4 x C2, C0 x C1
-  [[5, 3], [4, 2], [0, 1]],
-  // Rodada 3: C1 x C5, C2 x C0, C3 x C4
-  [[1, 5], [2, 0], [3, 4]],
-  // Rodada 4: C5 x C4, C0 x C3, C1 x C2
-  [[5, 4], [0, 3], [1, 2]],
-  // Rodada 5: C2 x C5, C3 x C1, C4 x C0
-  [[2, 5], [3, 1], [4, 0]],
-];
+  // No turno e returno para N par: cada clube joga exatamente N - 1 em casa e N - 1 fora (total 2*(N-1))
+  const homeMatchesPerClub = legs === 'TURNO_E_RETURNO'
+    ? (clubsCount - 1)
+    : Math.floor((clubsCount - 1) / 2);
+  const awayMatchesPerClub = legs === 'TURNO_E_RETURNO'
+    ? (clubsCount - 1)
+    : Math.ceil((clubsCount - 1) / 2);
+
+  return {
+    clubsCount,
+    roundsCount,
+    matchesPerRound,
+    totalMatches,
+    homeMatchesPerClub,
+    awayMatchesPerClub,
+    isEven,
+    legs,
+  };
+}
 
 export const calendarioService = {
   /**
    * Gera o calendário oficial de confrontos no formato TODOS CONTRA TODOS (Round-Robin)
+   * Suporta qualquer quantidade válida de clubes selecionada pelo administrador (ex: 10 clubes, 18 rodadas, 90 partidas).
    * Garante:
-   * - 6 clubes participantes oficiais exclusivamente (FM United, Real Football, Inter Tech, Porto Real, Santos Stars, Thales FC)
-   * - Atlântico FC, Atlético FC e Real Madrid excluídos
-   * - 10 rodadas (5 no turno, 5 no returno)
-   * - Exatamente 3 partidas por rodada (30 partidas no total)
-   * - Todos os 6 clubes jogando exatamente 1 vez por rodada
+   * - Utilização estrita dos clubes selecionados pelo administrador
+   * - Equilíbrio exato de mandos de campo (CASA x FORA)
+   * - Inversão rigorosa de mandos no Returno
+   * - Todos os clubes jogam exatamente 1 vez por rodada (sem folgas para quantidade par)
    * - Nenhum confronto duplicado no mesmo turno
-   * - Returno com inversão rigorosa de mando de campo (CASA x FORA)
-   * - Mando de campo equilibrado (5 em casa, 5 fora para cada clube)
-   * - Estádio oficial do mandante correto em cada partida
    */
   async generateRoundRobinCalendar(options: CalendarGenerationOptions): Promise<Match[]> {
     const {
@@ -86,51 +93,36 @@ export const calendarioService = {
       await this.revertToDraft(competitionId, true);
     }
 
-    // Busca os clubes da competição ou usa a seleção
+    // Busca estritamente os clubes da competição ou usa a seleção do administrador
     let clubs: Club[] = [];
-    if (selectedClubIds && selectedClubIds.length > 0) {
-      const allClubs = await participantesService.getClubsByCompetition(competitionId);
-      clubs = allClubs.filter((c) => selectedClubIds.includes(c.id));
-      if (clubs.length < selectedClubIds.length) {
-        // Busca do dataStore/clubesService se faltar algum
-        const fullClubs = await (await import('./clubesService')).clubesService.getAll();
-        clubs = fullClubs.filter((c) => selectedClubIds.includes(c.id));
-      }
-    } else {
-      clubs = await participantesService.getClubsByCompetition(competitionId);
-    }
-
-    // Filtra para remover qualquer clube banido (Atlântico FC, Atlético FC, Real Madrid)
-    clubs = clubs.filter((c) => {
-      const nameLower = c.name.toLowerCase();
-      const isBanned = BANNED_CLUB_IDENTIFIERS.some(
-        (b) => nameLower.includes(b) || c.id.toLowerCase() === b
-      );
-      return !isBanned;
-    });
-
-    // Se faltar algum dos 6 clubes oficiais autorizados, complementa a partir dos clubes cadastrados
     const fullClubs = await (await import('./clubesService')).clubesService.getAll();
-    for (const allowedId of ALLOWED_CLUB_IDS) {
-      if (!clubs.some((c) => c.id === allowedId)) {
-        const found = fullClubs.find((c) => c.id === allowedId);
-        if (found) clubs.push(found);
-      }
+
+    if (selectedClubIds && selectedClubIds.length > 0) {
+      clubs = selectedClubIds
+        .map((id) => {
+          const found = fullClubs.find((c) => c.id === id);
+          if (found) return found;
+          const local = dataStore.getClubById(id);
+          if (local) return local;
+          return {
+            id,
+            name: `Clube ${id.replace('club-', '')}`,
+            stadiumName: 'Estádio Municipal',
+            stadiumId: 'stad-default',
+          } as Club;
+        })
+        .filter((c): c is Club => Boolean(c));
+    } else {
+      const parts = await participantesService.getClubsByCompetition(competitionId);
+      clubs = parts.length > 0 ? parts : fullClubs;
     }
 
-    // Ordenação canônica determinística para a tabela Berger
-    clubs.sort((a, b) => {
-      const idxA = ALLOWED_CLUB_IDS.indexOf(a.id);
-      const idxB = ALLOWED_CLUB_IDS.indexOf(b.id);
-      if (idxA !== -1 && idxB !== -1) return idxA - idxB;
-      return a.name.localeCompare(b.name);
-    });
+    // Ordenação canônica determinística por nome
+    clubs.sort((a, b) => a.name.localeCompare(b.name));
 
     if (clubs.length < 2) {
       throw new Error(`São necessários ao menos 2 clubes participantes para gerar a tabela. Atual: ${clubs.length}.`);
     }
-
-    const generatedMatches: Match[] = [];
 
     // Helper para adicionar dias a uma data base
     const addDays = (startDateStr: string, days: number): string => {
@@ -139,122 +131,131 @@ export const calendarioService = {
       return d.toISOString().split('T')[0];
     };
 
-    const timeSlots = ['16:00', '18:30', '21:00'];
+    const timeSlots = ['16:00', '18:30', '21:00', '16:00', '18:30'];
 
-    if (clubs.length === 6) {
-      // 1º TURNO (Rodadas 1 a 5) usando a matriz Canônica Berger para 6 clubes
-      for (let r = 0; r < CANONICAL_BERGER_6.length; r++) {
-        const roundNumber = r + 1;
-        const roundDate = addDays(baseStartDate, r * 7);
-        const pairings = CANONICAL_BERGER_6[r];
+    // Algoritmo Canônico Round-Robin (Circle Method / Polígono com Pivô Fixo)
+    // Garante equilíbrio de mandos para qualquer N
+    const n = clubs.length;
+    const isOdd = n % 2 !== 0;
+    const teamList: (Club | null)[] = [...clubs];
+    if (isOdd) {
+      teamList.push(null);
+    }
+    const totalTeams = teamList.length; // sempre par
+    const numRoundsTurno = totalTeams - 1;
+    const matchesPerRound = totalTeams / 2;
 
-        for (let m = 0; m < pairings.length; m++) {
-          const [homeIdx, awayIdx] = pairings[m];
-          const homeTeam = clubs[homeIdx];
-          const awayTeam = clubs[awayIdx];
+    const rotating: (Club | null)[] = [];
+    for (let i = 0; i < totalTeams - 1; i++) {
+      rotating.push(teamList[i]);
+    }
+    const pivot = teamList[totalTeams - 1];
 
-          const matchId = `match-${competitionId}-r${roundNumber}-${homeTeam.id.slice(-4)}-${awayTeam.id.slice(-4)}`;
+    // 1º TURNO
+    const turnoMatches: Match[] = [];
 
-          const match: Match = {
-            id: matchId,
-            temporadaId: seasonId,
-            seasonId: seasonId,
-            competicaoId: competitionId,
-            competitionId: competitionId,
-            competitionName: competition.name,
-            season: competition.season,
-            round: roundNumber,
-            rodada: roundNumber,
-            date: roundDate,
-            time: timeSlots[m % timeSlots.length],
-            homeClubId: homeTeam.id,
-            homeClubName: homeTeam.name,
-            awayClubId: awayTeam.id,
-            awayClubName: awayTeam.name,
-            stadiumId: homeTeam.stadiumId || 'stad-default',
-            stadiumName: homeTeam.stadiumName || 'Estádio Principal',
-            status: 'SCHEDULED',
-            events: [],
-          };
+    for (let r = 0; r < numRoundsTurno; r++) {
+      const roundNumber = r + 1;
+      const roundDate = addDays(baseStartDate, r * 7);
 
-          generatedMatches.push(match);
-        }
+      // Partida 1: Envolve o pivô fixo
+      let homeTeam: Club | null;
+      let awayTeam: Club | null;
+
+      if (r % 2 === 0) {
+        homeTeam = rotating[0];
+        awayTeam = pivot;
+      } else {
+        homeTeam = pivot;
+        awayTeam = rotating[0];
       }
 
-      // 2º TURNO (RETURNO - Rodadas 6 a 10): Mando estritamente invertido
-      if (legs === 'TURNO_E_RETURNO') {
-        const returnoBaseDate = addDays(baseStartDate, 5 * 7); // Continua 7 dias após a rodada 5
-
-        for (let r = 0; r < CANONICAL_BERGER_6.length; r++) {
-          const returnoRoundNumber = 5 + r + 1; // Rodadas 6 a 10
-          const returnoDate = addDays(returnoBaseDate, r * 7);
-          const turnoMatches = generatedMatches.filter((m) => m.round === r + 1);
-
-          for (let m = 0; m < turnoMatches.length; m++) {
-            const original = turnoMatches[m];
-            const newHomeClub = clubs.find((c) => c.id === original.awayClubId)!;
-            const newAwayClub = clubs.find((c) => c.id === original.homeClubId)!;
-
-            const matchId = `match-${competitionId}-r${returnoRoundNumber}-${newHomeClub.id.slice(-4)}-${newAwayClub.id.slice(-4)}`;
-
-            const returnoMatch: Match = {
-              id: matchId,
-              temporadaId: seasonId,
-              seasonId: seasonId,
-              competicaoId: competitionId,
-              competitionId: competitionId,
-              competitionName: competition.name,
-              season: competition.season,
-              round: returnoRoundNumber,
-              rodada: returnoRoundNumber,
-              date: returnoDate,
-              time: original.time,
-              homeClubId: newHomeClub.id,
-              homeClubName: newHomeClub.name,
-              awayClubId: newAwayClub.id,
-              awayClubName: newAwayClub.name,
-              stadiumId: newHomeClub.stadiumId || 'stad-default',
-              stadiumName: newHomeClub.stadiumName || 'Estádio Principal',
-              status: 'SCHEDULED',
-              events: [],
-            };
-
-            generatedMatches.push(returnoMatch);
-          }
-        }
+      if (homeTeam && awayTeam) {
+        const matchId = `match-${competitionId}-r${roundNumber}-${homeTeam.id.slice(-4)}-${awayTeam.id.slice(-4)}`;
+        turnoMatches.push({
+          id: matchId,
+          temporadaId: seasonId,
+          seasonId: seasonId,
+          competicaoId: competitionId,
+          competitionId: competitionId,
+          competitionName: competition.name,
+          season: competition.season,
+          round: roundNumber,
+          rodada: roundNumber,
+          date: roundDate,
+          time: timeSlots[0],
+          homeClubId: homeTeam.id,
+          homeClubName: homeTeam.name,
+          awayClubId: awayTeam.id,
+          awayClubName: awayTeam.name,
+          stadiumId: homeTeam.stadiumId || 'stad-default',
+          stadiumName: homeTeam.stadiumName || 'Estádio Principal',
+          status: 'SCHEDULED',
+          events: [],
+        });
       }
-    } else {
-      // Fallback genérico Circle Method para N diferente de 6
-      const teamList: (Club | null)[] = [...clubs];
-      if (teamList.length % 2 !== 0) teamList.push(null);
-      const numTeams = teamList.length;
-      const numRoundsTurno = numTeams - 1;
-      const matchesPerRound = numTeams / 2;
-      const teams = [...teamList];
 
-      for (let round = 0; round < numRoundsTurno; round++) {
-        const roundNumber = round + 1;
-        const matchDate = addDays(baseStartDate, round * 7);
+      // Demais partidas da rodada
+      for (let m = 1; m < matchesPerRound; m++) {
+        const t1 = rotating[m];
+        const t2 = rotating[totalTeams - 1 - m];
 
-        for (let m = 0; m < matchesPerRound; m++) {
-          let homeTeam = teams[m];
-          let awayTeam = teams[numTeams - 1 - m];
+        if ((m + r) % 2 === 0) {
+          homeTeam = t1;
+          awayTeam = t2;
+        } else {
+          homeTeam = t2;
+          awayTeam = t1;
+        }
 
-          if (m === 0) {
-            if (round % 2 === 1) {
-              const temp = homeTeam;
-              homeTeam = awayTeam;
-              awayTeam = temp;
-            }
-          } else if (round % 2 === 1) {
-            const temp = homeTeam;
-            homeTeam = awayTeam;
-            awayTeam = temp;
-          }
+        if (!homeTeam || !awayTeam) continue;
 
-          if (!homeTeam || !awayTeam) continue;
+        const matchId = `match-${competitionId}-r${roundNumber}-${homeTeam.id.slice(-4)}-${awayTeam.id.slice(-4)}`;
+        turnoMatches.push({
+          id: matchId,
+          temporadaId: seasonId,
+          seasonId: seasonId,
+          competicaoId: competitionId,
+          competitionId: competitionId,
+          competitionName: competition.name,
+          season: competition.season,
+          round: roundNumber,
+          rodada: roundNumber,
+          date: roundDate,
+          time: timeSlots[m % timeSlots.length],
+          homeClubId: homeTeam.id,
+          homeClubName: homeTeam.name,
+          awayClubId: awayTeam.id,
+          awayClubName: awayTeam.name,
+          stadiumId: homeTeam.stadiumId || 'stad-default',
+          stadiumName: homeTeam.stadiumName || 'Estádio Principal',
+          status: 'SCHEDULED',
+          events: [],
+        });
+      }
 
-          const matchId = `match-${competitionId}-r${roundNumber}-${homeTeam.id.slice(-4)}-${awayTeam.id.slice(-4)}`;
+      // Rotação: o último elemento do rotating vai para o início
+      const last = rotating.pop();
+      if (last !== undefined) rotating.unshift(last);
+    }
+
+    const generatedMatches: Match[] = [...turnoMatches];
+
+    // 2º TURNO (RETURNO): Mando de campo estritamente invertido
+    if (legs === 'TURNO_E_RETURNO') {
+      const returnoBaseDate = addDays(baseStartDate, numRoundsTurno * 7);
+
+      for (let r = 0; r < numRoundsTurno; r++) {
+        const returnoRoundNumber = numRoundsTurno + r + 1;
+        const returnoDate = addDays(returnoBaseDate, r * 7);
+        const roundTurnoMatches = turnoMatches.filter((m) => m.round === r + 1);
+
+        for (let m = 0; m < roundTurnoMatches.length; m++) {
+          const original = roundTurnoMatches[m];
+          const newHomeClub = clubs.find((c) => c.id === original.awayClubId)!;
+          const newAwayClub = clubs.find((c) => c.id === original.homeClubId)!;
+
+          const matchId = `match-${competitionId}-r${returnoRoundNumber}-${newHomeClub.id.slice(-4)}-${newAwayClub.id.slice(-4)}`;
           generatedMatches.push({
             id: matchId,
             temporadaId: seasonId,
@@ -263,73 +264,31 @@ export const calendarioService = {
             competitionId: competitionId,
             competitionName: competition.name,
             season: competition.season,
-            round: roundNumber,
-            rodada: roundNumber,
-            date: matchDate,
-            time: timeSlots[m % timeSlots.length],
-            homeClubId: homeTeam.id,
-            homeClubName: homeTeam.name,
-            awayClubId: awayTeam.id,
-            awayClubName: awayTeam.name,
-            stadiumId: homeTeam.stadiumId || 'stad-default',
-            stadiumName: homeTeam.stadiumName || 'Estádio Principal',
+            round: returnoRoundNumber,
+            rodada: returnoRoundNumber,
+            date: returnoDate,
+            time: original.time,
+            homeClubId: newHomeClub.id,
+            homeClubName: newHomeClub.name,
+            awayClubId: newAwayClub.id,
+            awayClubName: newAwayClub.name,
+            stadiumId: newHomeClub.stadiumId || 'stad-default',
+            stadiumName: newHomeClub.stadiumName || 'Estádio Principal',
             status: 'SCHEDULED',
             events: [],
           });
         }
-
-        const lastTeam = teams.pop();
-        if (lastTeam !== undefined) teams.splice(1, 0, lastTeam);
-      }
-
-      if (legs === 'TURNO_E_RETURNO') {
-        const returnoBaseDate = addDays(baseStartDate, numRoundsTurno * 7);
-        for (let round = 0; round < numRoundsTurno; round++) {
-          const returnoRoundNumber = numRoundsTurno + round + 1;
-          const returnoDate = addDays(returnoBaseDate, round * 7);
-          const turnoMatches = generatedMatches.filter((m) => m.round === round + 1);
-
-          for (let m = 0; m < turnoMatches.length; m++) {
-            const original = turnoMatches[m];
-            const newHomeClub = clubs.find((c) => c.id === original.awayClubId);
-            const newAwayClub = clubs.find((c) => c.id === original.homeClubId);
-            if (!newHomeClub || !newAwayClub) continue;
-
-            const matchId = `match-${competitionId}-r${returnoRoundNumber}-${newHomeClub.id.slice(-4)}-${newAwayClub.id.slice(-4)}`;
-            generatedMatches.push({
-              id: matchId,
-              temporadaId: seasonId,
-              seasonId: seasonId,
-              competicaoId: competitionId,
-              competitionId: competitionId,
-              competitionName: competition.name,
-              season: competition.season,
-              round: returnoRoundNumber,
-              rodada: returnoRoundNumber,
-              date: returnoDate,
-              time: original.time,
-              homeClubId: newHomeClub.id,
-              homeClubName: newHomeClub.name,
-              awayClubId: newAwayClub.id,
-              awayClubName: newAwayClub.name,
-              stadiumId: newHomeClub.stadiumId || 'stad-default',
-              stadiumName: newHomeClub.stadiumName || 'Estádio Principal',
-              status: 'SCHEDULED',
-              events: [],
-            });
-          }
-        }
       }
     }
 
-    // Substitui com integridade atômica todas as partidas da competição pelas 30 geradas
+    // Substitui com integridade atômica todas as partidas da competição pelas partidas geradas
     await jogosService.replaceMatchesForCompetition(competitionId, generatedMatches);
 
-    // Atualiza metadados da competição para RASCUNHO / EM REVISÃO
-    const totalRounds = legs === 'TURNO_E_RETURNO' ? 10 : 5;
+    // Atualiza metadados da competição com o total exato de rodadas e clubes
+    const calculatedTotalRounds = legs === 'TURNO_E_RETURNO' ? numRoundsTurno * 2 : numRoundsTurno;
     await competicoesService.save({
       ...competition,
-      roundsCount: totalRounds,
+      roundsCount: calculatedTotalRounds,
       teamsCount: clubs.length,
       format: 'TODOS_CONTRA_TODOS',
       legs,

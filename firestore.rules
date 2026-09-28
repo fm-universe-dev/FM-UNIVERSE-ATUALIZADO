@@ -138,7 +138,7 @@ service cloud.firestore {
           request.resource.data.wageBudget == resource.data.wageBudget
         )
       );
-      allow delete: if false;
+      allow delete: if isAdmin();
     }
 
     // ==========================================

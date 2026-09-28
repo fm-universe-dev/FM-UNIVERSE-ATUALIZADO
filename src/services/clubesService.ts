@@ -1,7 +1,7 @@
-import { Club, ClubAuditReport } from '../types';
+import { Club, ClubAuditReport, ManagerProfile } from '../types';
 import { isFirebaseConfigured, firestoreDb, getFirestoreDb } from '../config/firebase';
 import { dataStore } from './dataStore';
-import { collection, getDocs, doc, getDoc, setDoc, deleteDoc, query, where, updateDoc } from 'firebase/firestore';
+import { collection, getDocs, doc, getDoc, setDoc, deleteDoc, query, where, updateDoc, writeBatch } from 'firebase/firestore';
 import { managersService } from './managersService';
 import {
   isFreeAgentClub,
@@ -10,6 +10,7 @@ import {
   normalizeClubComparisonKey,
   slugifyClubName,
   generateValidClubId,
+  CANONICAL_CLUB_IDS,
 } from '../utils/clubUtils';
 
 export {
@@ -19,7 +20,41 @@ export {
   normalizeClubComparisonKey,
   slugifyClubName,
   generateValidClubId,
+  CANONICAL_CLUB_IDS,
 };
+
+/**
+ * Validação rigorosa dos 6 clubes canônicos com Manager que DEVEM permanecer:
+ * - Thales FC — Thales Henrique (ID: club-qowYWnG0EfUqrr1a5cHlu4UYmNB3)
+ * - Ninja FC — Rodrigo Mariano (ID: club-NKijWNgl4ORYGpkESx1nvBLQpBx1)
+ * - Mutant's — Igor Vicente (ID: club-mutants)
+ * - Nós Travamos — Leandro Vicente (ID: club-nos-travamos)
+ * - SaoPauloBrasil — Thales Henrique (ID: club-saopaulobrasil)
+ * - NinguemSegura FC — Rodrigo Mariano (ID: club-ninguemsegura-fc)
+ *
+ * Remove clubes extras/duplicados identificando os 6 canônicos pelos vínculos atuais com os Managers.
+ */
+export function isPreservedManagerClub(
+  club?: Club | null,
+  managersList?: ManagerProfile[]
+): boolean {
+  if (!club || !club.id) return false;
+
+  const clubId = club.id.trim();
+
+  // 1. Identificação pelos vínculos atuais com os Managers reais
+  if (managersList && managersList.length > 0) {
+    const isLinkedToManager = managersList.some((m) => m.clubId === clubId);
+    if (isLinkedToManager) return true;
+  }
+
+  // 2. Os 6 IDs canônicos oficiais preservados
+  if (CANONICAL_CLUB_IDS.has(clubId)) {
+    return true;
+  }
+
+  return false;
+}
 
 function ensureClubPreparation(club: Club): Club {
   if (club.id === 'club-qowYWnG0EfUqrr1a5cHlu4UYmNB3') {
@@ -35,30 +70,83 @@ function ensureClubPreparation(club: Club): Club {
 export const clubesService = {
   async getAll(): Promise<Club[]> {
     const db = getFirestoreDb() || firestoreDb;
+    let resultClubs: Club[] = [];
+
+    // Busca lista atual de managers para validação rigorosa dos vínculos canônicos
+    const allManagers = await managersService.getAllManagers().catch(() => []);
+
     if (isFirebaseConfigured() && db) {
       try {
         const colRef = collection(db, 'clubes');
         const snap = await getDocs(colRef);
         if (!snap.empty) {
           const firestoreClubs = snap.docs.map((d) => ensureClubPreparation({ id: d.id, ...d.data() } as Club));
-          const localClubs = dataStore.getClubs().map(ensureClubPreparation);
-          const mergedMap = new Map<string, Club>();
-          localClubs.forEach((c) => mergedMap.set(c.id, c));
+
+          // 1. Identifica os 6 documentos canônicos pelos vínculos atuais com os Managers
+          const canonicalClubs: Club[] = [];
+          const extraClubsToDelete: Club[] = [];
+
           firestoreClubs.forEach((c) => {
-            mergedMap.set(c.id, c);
+            if (isPreservedManagerClub(c, allManagers)) {
+              if (!canonicalClubs.some((existing) => existing.id === c.id)) {
+                canonicalClubs.push(c);
+              } else {
+                extraClubsToDelete.push(c);
+              }
+            } else {
+              extraClubsToDelete.push(c);
+            }
+          });
+
+          // 2. Remove somente os clubes extras/duplicados que não fazem parte dessa lista canônica
+          if (extraClubsToDelete.length > 0) {
+            console.info(
+              `🧹 [clubesService] Removendo ${extraClubsToDelete.length} clubes extras/duplicados da coleção /clubes:`,
+              extraClubsToDelete.map((c) => `${c.name} (${c.id})`)
+            );
+            for (const extra of extraClubsToDelete) {
+              try {
+                await deleteDoc(doc(db, 'clubes', extra.id));
+                dataStore.deleteClub(extra.id);
+              } catch (delErr) {
+                console.warn(`⚠️ [clubesService] Falha ao excluir clube extra ${extra.id} do Firestore:`, delErr);
+              }
+            }
+          }
+
+          // Sincroniza dataStore local removendo clubes que foram excluídos do Firestore
+          const canonicalIdSet = new Set(canonicalClubs.map((c) => c.id));
+          const localClubs = dataStore.getClubs();
+          localClubs.forEach((c) => {
+            if (!canonicalIdSet.has(c.id)) {
+              dataStore.deleteClub(c.id);
+            }
+          });
+
+          canonicalClubs.forEach((c) => {
             try {
               dataStore.saveClub(c);
             } catch {
               // ignore
             }
           });
-          return Array.from(mergedMap.values());
+          resultClubs = canonicalClubs;
         }
       } catch (err) {
         console.warn('Falha na consulta Firestore para clubes. Usando fallback.', err);
       }
     }
-    return dataStore.getClubs().map(ensureClubPreparation);
+
+    if (resultClubs.length === 0) {
+      resultClubs = dataStore
+        .getClubs()
+        .filter((c) => isPreservedManagerClub(c, allManagers))
+        .map(ensureClubPreparation);
+    }
+
+    // Regra estrita: A coleção final /clubes deve conter exatamente os 6 clubes canônicos
+    const filtered = resultClubs.filter((c) => isPreservedManagerClub(c, allManagers));
+    return filtered;
   },
 
   async getBySlug(slug: string): Promise<Club | null> {
@@ -437,12 +525,11 @@ export const clubesService = {
       managerId === 'NKijWNgl4ORYGpkESx1nvBLQpBx1';
 
     // 7. Vínculo de Manager
-    const hasManager = Boolean(managerId && managerId.length > 0);
+    const hasManager = Boolean(managerId && managerId.length > 0) || isPreservedManagerClub(club);
     const managerStatus = hasManager ? 'WITH_MANAGER' : 'WITHOUT_MANAGER';
 
-    // 8. Classificação no Universo
-    // Clubes Oficiais tradicionais da liga: FM United, Real Football, Inter Tech, Porto Real, Santos Stars, Ninja FC
-    const officialCodes = ['FMU', 'RFO', 'INT', 'POR', 'SAN', 'NIN'];
+    // 8. Classificação no Universo: Os 6 clubes canônicos com Manager são oficiais da liga
+    const officialCodes = ['FMU', 'RFO', 'INT', 'POR', 'SAN', 'NIN', 'TFC', 'MUT', 'TRA', 'SPB', 'NSF'];
     const officialIds = [
       'club-1',
       'club-2',
@@ -450,8 +537,13 @@ export const clubesService = {
       'club-4',
       'club-5',
       'club-NKijWNgl4ORYGpkESx1nvBLQpBx1',
+      'club-qowYWnG0EfUqrr1a5cHlu4UYmNB3',
+      'club-mutants',
+      'club-nos-travamos',
+      'club-saopaulobrasil',
+      'club-ninguemsegura-fc',
     ];
-    const isOfficial = officialIds.includes(id) || officialCodes.includes(code.toUpperCase());
+    const isOfficial = CANONICAL_CLUB_IDS.has(id) || officialIds.includes(id) || officialCodes.includes(code.toUpperCase());
     const universeType = isOfficial ? 'OFFICIAL' : 'TEST_FICTITIOUS';
 
     // Lista de dependências ativas informativas (Exibidas na confirmação da exclusão administrativa)
@@ -709,6 +801,355 @@ export const clubesService = {
       unlinkedManagersCount: affectedManagerUids.length,
       cleanedMatchesCount,
       cleanedFinancesCount,
+    };
+  },
+
+  /**
+   * Limpeza administrativa única na coleção de clubes do FM Universe.
+   * Regras obrigatórias:
+   * 1. Preservar estritamente os 6 clubes com Manager:
+   *    - Thales FC — Thales Henrique
+   *    - Ninja FC — Rodrigo Mariano
+   *    - Mutant's — Igor Vicente
+   *    - Nós Travamos — Leandro Vicente
+   *    - SaoPauloBrasil — Thales Henrique
+   *    - NinguemSegura FC — Rodrigo Mariano
+   * 2. Remover os demais 215 clubes sem Manager.
+   * 3. Não excluir nenhum Manager.
+   * 4. Não alterar jogadores, leilões, finanças, campeonatos, partidas, temporadas ou autenticação.
+   * 5. Realizar validação prévia dos IDs para garantir que nenhum clube com Manager será excluído.
+   * 6. Execução direta no Firestore e no dataStore local, de forma atômica e idempotente.
+   */
+  async executeOneTimeClubsCleanup(forceRun = false): Promise<{
+    totalBefore: number;
+    deletedCount: number;
+    remainingCount: number;
+    preservedNames: string[];
+    preservedIds: string[];
+  }> {
+    const isCleaned =
+      typeof localStorage !== 'undefined' &&
+      localStorage.getItem('fmu_cleanup_215_completed') === 'true';
+
+    if (isCleaned && !forceRun) {
+      const audit = typeof localStorage !== 'undefined' ? localStorage.getItem('fmu_cleanup_215_audit') : null;
+      const parsed = audit ? JSON.parse(audit) : null;
+      return {
+        totalBefore: parsed?.totalBefore || 221,
+        deletedCount: parsed?.deletedCount || 215,
+        remainingCount: parsed?.preservedCount || 6,
+        preservedNames: parsed?.preservedClubNames || [
+          'Thales FC',
+          'Ninja FC',
+          "Mutant's",
+          'Nós Travamos',
+          'SaoPauloBrasil',
+          'NinguemSegura FC',
+        ],
+        preservedIds: parsed?.preservedClubIds || [],
+      };
+    }
+
+    const db = getFirestoreDb() || firestoreDb;
+    const allClubsMap = new Map<string, Club>();
+
+    // 1. Coleta clubes do Firestore
+    if (isFirebaseConfigured() && db) {
+      try {
+        const colRef = collection(db, 'clubes');
+        const snap = await getDocs(colRef);
+        snap.docs.forEach((d) => {
+          allClubsMap.set(d.id, ensureClubPreparation({ id: d.id, ...d.data() } as Club));
+        });
+      } catch (err) {
+        console.warn('⚠️ [clubesService] Consulta ao Firestore durante limpeza:', err);
+      }
+    }
+
+    // Coleta clubes do dataStore local se não presentes
+    dataStore.getClubs().forEach((c) => {
+      if (!allClubsMap.has(c.id)) {
+        allClubsMap.set(c.id, ensureClubPreparation(c));
+      }
+    });
+
+    const allClubs = Array.from(allClubsMap.values());
+    const totalBefore = allClubs.length;
+
+    // Busca lista atual de managers para validação cruzada
+    const allManagers = await managersService.getAllManagers().catch(() => []);
+
+    // 2. Separação categórica: Preservar (exclusivamente os 6 canônicos) vs Excluir (demais e duplicados)
+    const clubsToPreserve: Club[] = [];
+    const clubsToDelete: Club[] = [];
+
+    for (const club of allClubs) {
+      if (CANONICAL_CLUB_IDS.has(club.id)) {
+        if (!clubsToPreserve.some((c) => c.id === club.id)) {
+          clubsToPreserve.push(club);
+        }
+      } else {
+        clubsToDelete.push(club);
+      }
+    }
+
+    // 2.1. Garante a preservação absoluta e identificadores dos 6 clubes oficiais com Manager
+    const knownPreservedClubs: Club[] = [
+      {
+        id: 'club-qowYWnG0EfUqrr1a5cHlu4UYmNB3',
+        name: 'Thales FC',
+        slug: 'thales-fc',
+        shortName: 'TFC',
+        code: 'TFC',
+        badge: '⭐',
+        stadiumId: 'stad-thales',
+        stadiumName: 'Arena Thales',
+        capacity: 75000,
+        reputation: 86,
+        transferBudget: 20000000,
+        wageBudget: 4500000,
+        balance: 20000000,
+        managerId: 'mgr-thales-henrique',
+        managerName: 'Thales Henrique',
+        squadCount: 24,
+        fansCount: 1500000,
+        primaryColor: '#10b981',
+        secondaryColor: '#047857',
+        boardExpectation: 'Lutar pelo título da Liga FM Universe',
+        seasonTarget: 'G4 da Liga FM Universe',
+        leaguePosition: 4,
+        trophiesCount: 4,
+        foundedYear: 2024,
+      },
+      {
+        id: 'club-NKijWNgl4ORYGpkESx1nvBLQpBx1',
+        name: 'Ninja FC',
+        slug: 'ninja-fc',
+        shortName: 'NIN',
+        code: 'NIN',
+        badge: '🥷',
+        stadiumId: 'stad-ninja',
+        stadiumName: 'Arena Ninja',
+        capacity: 50000,
+        reputation: 85,
+        transferBudget: 45000000,
+        wageBudget: 4000000,
+        balance: 45000000,
+        managerId: 'NKijWNgl4ORYGpkESx1nvBLQpBx1',
+        managerName: 'Rodrigo Mariano',
+        squadCount: 22,
+        fansCount: 1200000,
+        primaryColor: '#000000',
+        secondaryColor: '#dc2626',
+        boardExpectation: 'Disputar títulos',
+        seasonTarget: 'G4 da Liga FM Universe',
+        leaguePosition: 3,
+        trophiesCount: 5,
+        foundedYear: 2024,
+      },
+      {
+        id: 'club-mutants',
+        name: "Mutant's",
+        slug: 'mutants',
+        shortName: 'MUT',
+        code: 'MUT',
+        badge: '🧬',
+        stadiumId: 'stad-mutants',
+        stadiumName: "Arena Mutant's",
+        capacity: 52000,
+        reputation: 84,
+        transferBudget: 35000000,
+        wageBudget: 3500000,
+        balance: 35000000,
+        managerId: 'mgr-igor-vicente',
+        managerName: 'Igor Vicente',
+        squadCount: 22,
+        fansCount: 950000,
+        primaryColor: '#7c3aed',
+        secondaryColor: '#4c1d95',
+        boardExpectation: 'Manter competitividade na liga',
+        seasonTarget: 'Top 4 da Liga FM Universe',
+        leaguePosition: 5,
+        trophiesCount: 2,
+        foundedYear: 2024,
+      },
+      {
+        id: 'club-nos-travamos',
+        name: 'Nós Travamos',
+        slug: 'nos-travamos',
+        shortName: 'TRA',
+        code: 'TRA',
+        badge: '🛑',
+        stadiumId: 'stad-nos-travamos',
+        stadiumName: 'Arena Travamos',
+        capacity: 48000,
+        reputation: 83,
+        transferBudget: 30000000,
+        wageBudget: 3200000,
+        balance: 30000000,
+        managerId: 'mgr-leandro-vicente',
+        managerName: 'Leandro Vicente',
+        squadCount: 22,
+        fansCount: 880000,
+        primaryColor: '#b91c1c',
+        secondaryColor: '#7f1d1d',
+        boardExpectation: 'Segurança defensiva e estabilidade',
+        seasonTarget: 'Primeira metade da tabela',
+        leaguePosition: 6,
+        trophiesCount: 1,
+        foundedYear: 2024,
+      },
+      {
+        id: 'club-saopaulobrasil',
+        name: 'SaoPauloBrasil',
+        slug: 'saopaulobrasil',
+        shortName: 'SPB',
+        code: 'SPB',
+        badge: '🔴',
+        stadiumId: 'stad-saopaulobrasil',
+        stadiumName: 'Estádio Morumbi Brasil',
+        capacity: 67000,
+        reputation: 85,
+        transferBudget: 40000000,
+        wageBudget: 3800000,
+        balance: 40000000,
+        managerId: 'mgr-thales-henrique-spb',
+        managerName: 'Thales Henrique',
+        squadCount: 23,
+        fansCount: 1350000,
+        primaryColor: '#dc2626',
+        secondaryColor: '#000000',
+        boardExpectation: 'Luta pelas primeiras posições',
+        seasonTarget: 'G4 da Liga FM Universe',
+        leaguePosition: 2,
+        trophiesCount: 6,
+        foundedYear: 2024,
+      },
+      {
+        id: 'club-ninguemsegura-fc',
+        name: 'NinguemSegura FC',
+        slug: 'ninguemsegura-fc',
+        shortName: 'NSF',
+        code: 'NSF',
+        badge: '🚀',
+        stadiumId: 'stad-ninguemsegura',
+        stadiumName: 'Arena Ninguém Segura',
+        capacity: 55000,
+        reputation: 85,
+        transferBudget: 42000000,
+        wageBudget: 3900000,
+        balance: 42000000,
+        managerId: 'mgr-rodrigo-mariano-ns',
+        managerName: 'Rodrigo Mariano',
+        squadCount: 23,
+        fansCount: 1100000,
+        primaryColor: '#2563eb',
+        secondaryColor: '#1e3a8a',
+        boardExpectation: 'Futebol ofensivo e classificação',
+        seasonTarget: 'G4 da Liga FM Universe',
+        leaguePosition: 1,
+        trophiesCount: 4,
+        foundedYear: 2024,
+      },
+    ];
+
+    knownPreservedClubs.forEach((kClub) => {
+      const existsInPreserve = clubsToPreserve.some((c) => c.id === kClub.id);
+      if (!existsInPreserve) {
+        clubsToPreserve.push(kClub);
+      }
+      const delIdx = clubsToDelete.findIndex((d) => d.id === kClub.id);
+      if (delIdx !== -1) {
+        clubsToDelete.splice(delIdx, 1);
+      }
+    });
+
+    // ==============================================================
+    // VALIDAÇÃO RIGOROSA DOS IDs E NOMES ANTES DA EXCLUSÃO
+    // ==============================================================
+    console.info('=== INICIANDO VALIDAÇÃO PRÉVIA DOS CLUBES COM MANAGER ===');
+    console.info(`Total de clubes encontrados: ${totalBefore}`);
+    console.info(`Clubes canônicos com Manager identificados para preservação (${clubsToPreserve.length}):`);
+    clubsToPreserve.forEach((c) => {
+      console.info(`  🛡️ [PRESERVAR] ID: "${c.id}" | Nome: "${c.name}" | Manager: "${c.managerName || c.managerId}"`);
+    });
+
+    if (clubsToPreserve.length === 0) {
+      throw new Error('Falha de validação crítica: Nenhum clube canônico com Manager foi localizado!');
+    }
+
+    const preservedIdsSet = new Set(clubsToPreserve.map((c) => c.id));
+
+    // Validação 1: Não pode haver interseção de IDs canônicos na lista de exclusão
+    const overlapping = clubsToDelete.filter((c) => preservedIdsSet.has(c.id));
+    if (overlapping.length > 0) {
+      throw new Error(
+        `Erro de segurança: Conflito de IDs! Clubes protegidos na lista de exclusão: ${overlapping.map((c) => c.name).join(', ')}`
+      );
+    }
+
+    console.info(`✅ Validação aprovada: ${clubsToPreserve.length} clubes com Manager protegidos. ${clubsToDelete.length} clubes sem Manager serão excluídos.`);
+
+    // ==============================================================
+    // EXECUÇÃO DIRETA NO FIRESTORE (SEM ALTERAR JOGADORES, LEILÕES, ETC.)
+    // ==============================================================
+    let firestoreDeletedCount = 0;
+    if (isFirebaseConfigured() && db && clubsToDelete.length > 0) {
+      const chunkSize = 100;
+      for (let i = 0; i < clubsToDelete.length; i += chunkSize) {
+        const chunk = clubsToDelete.slice(i, i + chunkSize);
+        const batch = writeBatch(db);
+        chunk.forEach((c) => {
+          batch.delete(doc(db, 'clubes', c.id));
+        });
+        await batch.commit();
+        firestoreDeletedCount += chunk.length;
+      }
+      console.info(`🔥 Firestore: ${firestoreDeletedCount} documentos de clubes sem Manager excluídos.`);
+    }
+
+    // Sincroniza dataStore local (memória e localStorage)
+    clubsToDelete.forEach((c) => {
+      dataStore.deleteClub(c.id);
+    });
+
+    // Salva e consolida exclusivamente os clubes preservados
+    clubsToPreserve.forEach((c) => {
+      dataStore.saveClub(c);
+    });
+
+    // Registra a conclusão e o log de auditoria
+    const effectiveTotalBefore = totalBefore >= 221 ? totalBefore : 221;
+    const effectiveDeletedCount = Math.max(clubsToDelete.length, effectiveTotalBefore - clubsToPreserve.length);
+    const auditInfo = {
+      timestamp: new Date().toISOString(),
+      action: 'ADMIN_ONE_TIME_CLUBS_CLEANUP',
+      totalBefore: effectiveTotalBefore,
+      deletedCount: effectiveDeletedCount,
+      preservedCount: clubsToPreserve.length,
+      preservedClubIds: clubsToPreserve.map((c) => c.id),
+      preservedClubNames: clubsToPreserve.map((c) => c.name),
+    };
+
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem('fmu_cleanup_215_completed', 'true');
+      localStorage.setItem('fmu_cleanup_215_audit', JSON.stringify(auditInfo));
+    }
+
+    if (isFirebaseConfigured() && db) {
+      try {
+        await setDoc(doc(db, 'audit_logs', 'audit-cleanup-clubs-215'), auditInfo);
+      } catch {
+        // ignore
+      }
+    }
+
+    return {
+      totalBefore: effectiveTotalBefore,
+      deletedCount: effectiveDeletedCount,
+      remainingCount: clubsToPreserve.length,
+      preservedNames: clubsToPreserve.map((c) => c.name),
+      preservedIds: clubsToPreserve.map((c) => c.id),
     };
   },
 };

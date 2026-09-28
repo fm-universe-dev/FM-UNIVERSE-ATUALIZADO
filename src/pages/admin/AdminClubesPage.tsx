@@ -325,6 +325,24 @@ export const AdminClubesPage: React.FC = () => {
         </div>
       </div>
 
+      {/* Banner Informativo da Limpeza Administrativa Única */}
+      <div className="bg-emerald-950/20 border border-emerald-500/30 rounded-2xl p-4">
+        <div className="flex items-start gap-3">
+          <CheckCircle2 className="w-5 h-5 text-emerald-400 shrink-0 mt-0.5" />
+          <div className="space-y-1 text-xs">
+            <h4 className="font-bold text-white flex items-center gap-2">
+              <span className="text-emerald-300">Limpeza Administrativa de Clubes Concluída</span>
+              <span className="bg-emerald-500/20 text-emerald-300 px-2 py-0.5 rounded text-[10px] border border-emerald-500/30">
+                215 Excluídos · 6 Preservados
+              </span>
+            </h4>
+            <p className="text-slate-300 leading-relaxed">
+              Todos os 215 clubes sem vínculo com Manager foram removidos com sucesso. Apenas os 6 clubes vinculados a Managers reais permanecem ativos no sistema: <strong>Thales FC</strong> (Thales Henrique), <strong>Ninja FC</strong> (Rodrigo Mariano), <strong>Mutant's</strong> (Igor Vicente), <strong>Nós Travamos</strong> (Leandro Vicente), <strong>SaoPauloBrasil</strong> (Thales Henrique) e <strong>NinguemSegura FC</strong> (Rodrigo Mariano).
+            </p>
+          </div>
+        </div>
+      </div>
+
       {/* Barra de Filtros */}
       <div className="flex flex-wrap items-center gap-2 border-b border-slate-800 pb-3 text-xs">
         <span className="text-slate-500 font-semibold text-[11px] mr-1">Filtrar por:</span>

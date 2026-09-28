@@ -10,6 +10,7 @@ import {
   Trophy,
   History,
   User,
+  Search,
 } from 'lucide-react';
 import { leiloesV3Service } from '../../services/leiloesV3Service';
 import { Leilao, Lance } from '../../types/leiloesV3';
@@ -23,6 +24,9 @@ export const ManagerLeiloesV3Page: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [quotaError, setQuotaError] = useState<string | null>(null);
+
+  // Busca em tempo real na lista de leilões abertos
+  const [termoBusca, setTermoBusca] = useState('');
 
   // Leilão selecionado para detalhes e lances
   const [leilaoAtivo, setLeilaoAtivo] = useState<Leilao | null>(null);
@@ -85,6 +89,63 @@ export const ManagerLeiloesV3Page: React.FC = () => {
       );
     });
   }, [leiloes]);
+
+  // Lista de leilões abertos com pesquisa por nome/sobrenome em tempo real e ordenação automática:
+  // 1. OVR do maior para o menor (principal critério)
+  // 2. Em caso de empate no OVR, Valor de Mercado do maior para o menor
+  // 3. Em caso de empate nos dois critérios, Nome em ordem alfabética (A-Z)
+  const leiloesAbertosExibidos = useMemo(() => {
+    let lista = leiloesAbertos;
+
+    if (termoBusca.trim()) {
+      const rawQ = termoBusca
+        .normalize('NFD')
+        .replace(/[\u0300-\u036f]/g, '')
+        .toLowerCase()
+        .trim();
+      const terms = rawQ.split(/[\s,]+/).filter(Boolean);
+
+      lista = lista.filter((l) => {
+        const nomeInvertido = l.playerName?.includes(',')
+          ? l.playerName.split(',').reverse().map((s) => s.trim()).join(' ')
+          : '';
+        const searchable = [
+          l.playerName,
+          nomeInvertido,
+          (l as any).playerFullName,
+          (l as any).nome,
+          (l as any).nomeCompleto,
+          (l as any).knownAs,
+          (l as any).nickname,
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .normalize('NFD')
+          .replace(/[\u0300-\u036f]/g, '')
+          .toLowerCase();
+
+        return terms.every((term) => searchable.includes(term));
+      });
+    }
+
+    return [...lista].sort((a, b) => {
+      const ovrA = Number(a.playerRating || (a as any).ovr || (a as any).ca || (a as any).rating || 70);
+      const ovrB = Number(b.playerRating || (b as any).ovr || (b as any).ca || (b as any).rating || 70);
+      if (ovrB !== ovrA) {
+        return ovrB - ovrA;
+      }
+
+      const valA = Number((a as any).marketValue || (a as any).valorMercado || a.initialBid || 0);
+      const valB = Number((b as any).marketValue || (b as any).valorMercado || b.initialBid || 0);
+      if (valB !== valA) {
+        return valB - valA;
+      }
+
+      const nameA = (a.playerName || '').trim();
+      const nameB = (b.playerName || '').trim();
+      return nameA.localeCompare(nameB, 'pt-BR', { sensitivity: 'base' });
+    });
+  }, [leiloesAbertos, termoBusca]);
 
   const leiloesEncerrados = useMemo(() => {
     const now = Date.now();
@@ -223,24 +284,55 @@ export const ManagerLeiloesV3Page: React.FC = () => {
 
       {/* 1. SEÇÃO: LEILÕES ABERTOS */}
       <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
-        <div className="p-5 border-b border-slate-800 flex justify-between items-center">
-          <h2 className="text-lg font-semibold text-white flex items-center gap-2">
-            <Gavel className="w-5 h-5 text-amber-400" />
-            <span>Leilões Disponíveis</span>
-            <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono font-bold">
-              {leiloesAbertos.length}
-            </span>
-          </h2>
+        <div className="p-5 border-b border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4">
+          <div className="flex items-center gap-3">
+            <h2 className="text-lg font-semibold text-white flex items-center gap-2">
+              <Gavel className="w-5 h-5 text-amber-400" />
+              <span>Leilões Disponíveis</span>
+              <span className="text-xs px-2.5 py-0.5 rounded-full bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono font-bold">
+                {leiloesAbertosExibidos.length}
+              </span>
+            </h2>
+            {termoBusca && (
+              <span className="text-xs text-slate-400">
+                ({leiloesAbertosExibidos.length} de {leiloesAbertos.length})
+              </span>
+            )}
+          </div>
 
-          <button
-            onClick={() => carregarLeiloes(true)}
-            disabled={loading || refreshing}
-            className="px-3 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl text-xs font-medium text-slate-300 hover:text-white flex items-center gap-1.5 transition disabled:opacity-50"
-            title="Buscar leilões atualizados no Firestore"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 text-amber-400 ${refreshing ? 'animate-spin' : ''}`} />
-            <span>{refreshing ? 'Atualizando...' : 'Atualizar'}</span>
-          </button>
+          <div className="flex items-center gap-3 flex-1 md:max-w-md md:justify-end">
+            {/* Caixa de Pesquisa com Ícone de Lupa */}
+            <div className="relative flex-1">
+              <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
+              <input
+                type="text"
+                value={termoBusca}
+                onChange={(e) => setTermoBusca(e.target.value)}
+                placeholder="Pesquisar jogador..."
+                className="w-full bg-slate-950 border border-slate-800 rounded-xl pl-9 pr-8 py-2 text-sm text-white placeholder-slate-500 focus:outline-none focus:border-amber-500/50 focus:ring-1 focus:ring-amber-500/50 transition"
+              />
+              {termoBusca && (
+                <button
+                  type="button"
+                  onClick={() => setTermoBusca('')}
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white text-xs px-1"
+                  title="Limpar pesquisa"
+                >
+                  ✕
+                </button>
+              )}
+            </div>
+
+            <button
+              onClick={() => carregarLeiloes(true)}
+              disabled={loading || refreshing}
+              className="px-3 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl text-xs font-medium text-slate-300 hover:text-white flex items-center gap-1.5 transition disabled:opacity-50 shrink-0"
+              title="Buscar leilões atualizados no Firestore"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 text-amber-400 ${refreshing ? 'animate-spin' : ''}`} />
+              <span>{refreshing ? 'Atualizando...' : 'Atualizar'}</span>
+            </button>
+          </div>
         </div>
 
         {loading ? (
@@ -256,9 +348,25 @@ export const ManagerLeiloesV3Page: React.FC = () => {
               Novos atletas colocados em disputa pela administração aparecerão aqui.
             </p>
           </div>
+        ) : leiloesAbertosExibidos.length === 0 ? (
+          <div className="p-12 text-center text-slate-400 space-y-3">
+            <Search className="w-12 h-12 mx-auto text-slate-600 stroke-[1.5]" />
+            <p className="text-base font-medium text-slate-300">
+              Nenhum jogador encontrado para "{termoBusca}".
+            </p>
+            <p className="text-sm text-slate-500">
+              Verifique a grafia ou tente buscar por outro nome ou sobrenome.
+            </p>
+            <button
+              onClick={() => setTermoBusca('')}
+              className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl text-xs font-medium text-slate-300 transition"
+            >
+              Limpar busca
+            </button>
+          </div>
         ) : (
           <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6 p-6">
-            {leiloesAbertos.map((l) => (
+            {leiloesAbertosExibidos.map((l) => (
               <div
                 key={l.id}
                 className="bg-slate-950 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between hover:border-slate-700 transition"
@@ -293,6 +401,7 @@ export const ManagerLeiloesV3Page: React.FC = () => {
                       </div>
                       <p className="text-xs text-slate-400">
                         {l.playerPosition || 'Atleta'} • {l.playerClub || 'Livre'}
+                        {l.playerRating ? ` • OVR ${l.playerRating}` : ''}
                       </p>
                     </div>
                   </div>

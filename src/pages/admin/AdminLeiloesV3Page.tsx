@@ -130,7 +130,7 @@ export const AdminLeiloesV3Page: React.FC = () => {
   }, [filtroMassBusca, filtroMassPosicao, filtroMassOvrMin]);
 
   const jogadoresSemClubeFiltrados = useMemo(() => {
-    return massJogadores.filter((p) => {
+    const filtrados = massJogadores.filter((p) => {
       // 1. Busca textual abrangente (nome, sobrenome, apelido, posições, nacionalidade, OVR, clube de origem)
       if (filtroMassBusca.trim()) {
         const rawQ = cleanSearchText(filtroMassBusca);
@@ -205,6 +205,28 @@ export const AdminLeiloesV3Page: React.FC = () => {
       }
 
       return true;
+    });
+
+    // Ordenação automática solicitada:
+    // 1. OVR do maior para o menor (principal critério)
+    // 2. Em caso de empate no OVR, Valor de Mercado do maior para o menor
+    // 3. Em caso de empate nos dois critérios, Nome em ordem alfabética
+    return filtrados.sort((a, b) => {
+      const ovrA = Number(a.overall || (a as any).ca || 70);
+      const ovrB = Number(b.overall || (b as any).ca || 70);
+      if (ovrB !== ovrA) {
+        return ovrB - ovrA;
+      }
+
+      const valA = Number(a.marketValue || (a as any).valorMercado || (a as any).valor || 1000000);
+      const valB = Number(b.marketValue || (b as any).valorMercado || (b as any).valor || 1000000);
+      if (valB !== valA) {
+        return valB - valA;
+      }
+
+      const nameA = (a.name || (a as any).nome || '').trim();
+      const nameB = (b.name || (b as any).nome || '').trim();
+      return nameA.localeCompare(nameB, 'pt-BR', { sensitivity: 'base' });
     });
   }, [massJogadores, filtroMassBusca, filtroMassPosicao, filtroMassOvrMin]);
 

@@ -169,3 +169,46 @@ export function createFMUniverseClubObject(
     foundedYear: 1902,
   };
 }
+
+export const CANONICAL_CLUB_IDS = new Set([
+  'club-qowYWnG0EfUqrr1a5cHlu4UYmNB3', // Thales FC — Thales Henrique
+  'club-NKijWNgl4ORYGpkESx1nvBLQpBx1', // Ninja FC — Rodrigo Mariano
+  'club-mutants',                       // Mutant's — Igor Vicente
+  'club-nos-travamos',                  // Nós Travamos — Leandro Vicente
+  'club-saopaulobrasil',                // SaoPauloBrasil — Thales Henrique
+  'club-ninguemsegura-fc',              // NinguemSegura FC — Rodrigo Mariano
+]);
+
+/**
+ * Validação rigorosa dos 6 clubes canônicos com Manager que DEVEM permanecer:
+ * - Thales FC — Thales Henrique (ID: club-qowYWnG0EfUqrr1a5cHlu4UYmNB3)
+ * - Ninja FC — Rodrigo Mariano (ID: club-NKijWNgl4ORYGpkESx1nvBLQpBx1)
+ * - Mutant's — Igor Vicente (ID: club-mutants)
+ * - Nós Travamos — Leandro Vicente (ID: club-nos-travamos)
+ * - SaoPauloBrasil — Thales Henrique (ID: club-saopaulobrasil)
+ * - NinguemSegura FC — Rodrigo Mariano (ID: club-ninguemsegura-fc)
+ *
+ * Remove clubes extras/duplicados identificando os 6 canônicos pelos vínculos atuais com os Managers.
+ */
+export function isPreservedManagerClub(
+  club?: Club | null,
+  managersList?: Array<{ uid?: string; login?: string; clubId?: string | null; name?: string }>
+): boolean {
+  if (!club || !club.id) return false;
+
+  const clubId = club.id.trim();
+
+  // 1. Identificação pelos vínculos atuais com os Managers reais
+  if (managersList && managersList.length > 0) {
+    const isLinkedToManager = managersList.some((m) => m.clubId === clubId);
+    if (isLinkedToManager) return true;
+  }
+
+  // 2. Os 6 IDs canônicos oficiais preservados
+  if (CANONICAL_CLUB_IDS.has(clubId)) {
+    return true;
+  }
+
+  return false;
+}
+
