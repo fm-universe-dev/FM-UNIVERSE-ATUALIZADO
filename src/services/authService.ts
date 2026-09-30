@@ -463,6 +463,19 @@ export async function signInWithEmail(email: string, pass: string): Promise<Fire
 
 import { ManagerProfile } from '../types';
 import { managersService } from './managersService';
+import {
+  normalizeUsername,
+  validateUsernameFormat,
+  getInternalAuthEmail,
+  CANONICAL_MANAGER_LOGINS,
+} from '../utils/usernameUtils';
+
+export {
+  normalizeUsername,
+  validateUsernameFormat,
+  getInternalAuthEmail,
+  CANONICAL_MANAGER_LOGINS,
+};
 
 /**
  * Traduz códigos de erro oficiais do Firebase Authentication para mensagens amigáveis em português.
@@ -474,14 +487,13 @@ export function parseAuthErrorMessage(error: unknown): string {
 
   switch (code) {
     case 'auth/invalid-email':
-      return 'O formato do e-mail informado é inválido. Ex: manager@fmuniverse.com';
     case 'auth/user-not-found':
-      return 'Nenhuma conta de treinador encontrada com este e-mail. Verifique os dados ou crie sua conta.';
+      return 'Nenhuma conta de treinador encontrada com este nome de usuário. Verifique os dados ou crie sua conta.';
     case 'auth/wrong-password':
     case 'auth/invalid-credential':
-      return 'E-mail ou senha incorretos. Verifique suas credenciais.';
+      return 'Nome de usuário ou senha incorretos. Verifique suas credenciais.';
     case 'auth/email-already-in-use':
-      return 'Este e-mail já está cadastrado. Faça login ou use outro e-mail.';
+      return 'Este nome de usuário já está em uso. Escolha outro nome de usuário ou faça login.';
     case 'auth/weak-password':
       return 'A senha fornecida é muito fraca. Utilize no mínimo 6 caracteres com números ou símbolos.';
     case 'auth/network-request-failed':
@@ -489,9 +501,291 @@ export function parseAuthErrorMessage(error: unknown): string {
     case 'auth/too-many-requests':
       return 'Muitas tentativas sem sucesso. Por segurança, aguarde alguns instantes antes de tentar novamente.';
     case 'auth/operation-not-allowed':
-      return 'O provedor de E-mail/Senha ainda não foi ativado no console do Firebase. Habilite o provider Email/Password nas configurações de autenticação do Firebase.';
+      return 'O provedor de autenticação ainda não foi ativado no console do Firebase.';
     default:
       return err.message || 'Falha ao autenticar. Tente novamente.';
+  }
+}
+
+/**
+ * Verifica se um nome de usuário está disponível para cadastro.
+ */
+export async function checkUsernameAvailability(
+  username: string
+): Promise<{ available: boolean; error?: string; normalized: string }> {
+  const validation = validateUsernameFormat(username);
+  if (!validation.valid) {
+    return { available: false, error: validation.error, normalized: validation.normalized };
+  }
+
+  const normalized = validation.normalized;
+
+  // 1. Verifica managers canônicos pré-existentes
+  if (CANONICAL_MANAGER_LOGINS[normalized]) {
+    return {
+      available: false,
+      error: 'Este nome de usuário já está em uso.',
+      normalized,
+    };
+  }
+
+  // 2. Consulta Firestore /usernames/{normalized}
+  const db = getFirestoreDb() || firestoreDb;
+  if (isFirebaseConfigured() && db) {
+    try {
+      const uDocRef = doc(db, 'usernames', normalized);
+      const snap = await getDoc(uDocRef);
+      if (snap.exists()) {
+        return {
+          available: false,
+          error: 'Este nome de usuário já está em uso.',
+          normalized,
+        };
+      }
+    } catch (e) {
+      console.warn('⚠️ [Auth] Falha ao verificar /usernames:', e);
+    }
+  }
+
+  // 3. Consulta lista de managers em cache/local
+  const allManagers = await managersService.getAllManagers().catch(() => []);
+  const existsInManagers = allManagers.some(
+    (m) =>
+      m.login?.toLowerCase() === normalized ||
+      m.usernameNormalizado?.toLowerCase() === normalized ||
+      m.username?.toLowerCase() === normalized
+  );
+
+  if (existsInManagers) {
+    return {
+      available: false,
+      error: 'Este nome de usuário já está em uso.',
+      normalized,
+    };
+  }
+
+  return { available: true, normalized };
+}
+
+/**
+ * Cadastra uma conta de Manager utilizando exclusivamente Nome de usuário e Senha (sem e-mail).
+ */
+export async function registerManagerWithUsername(params: {
+  name: string;
+  username: string;
+  pass: string;
+  confirmPass: string;
+}): Promise<{ user: FirebaseUser; profile: ManagerProfile }> {
+  const { name, username, pass, confirmPass } = params;
+  const cleanName = name.trim();
+  if (!cleanName) throw new Error('O Nome do Manager é obrigatório.');
+
+  const validation = validateUsernameFormat(username);
+  if (!validation.valid) throw new Error(validation.error);
+
+  if (!pass) throw new Error('A senha é obrigatória.');
+  if (pass.length < 6) throw new Error('A senha deve ter no mínimo 6 caracteres.');
+  if (pass !== confirmPass) throw new Error('A confirmação de senha não confere com a senha digitada.');
+
+  if (!firebaseAuth) {
+    throw new Error('Firebase Authentication não está inicializado.');
+  }
+
+  // 1. Verifica disponibilidade do username
+  const check = await checkUsernameAvailability(validation.normalized);
+  if (!check.available) {
+    throw new Error(check.error || 'Este nome de usuário já está em uso.');
+  }
+
+  const internalEmail = getInternalAuthEmail(validation.normalized);
+
+  // 2. Cria conta no Firebase Authentication
+  let cred;
+  try {
+    cred = await createUserWithEmailAndPassword(firebaseAuth, internalEmail, pass);
+  } catch (err: any) {
+    if (err.code === 'auth/email-already-in-use') {
+      throw new Error('Este nome de usuário já está em uso.');
+    }
+    throw err;
+  }
+
+  const user = cred.user;
+
+  // 3. Atualiza o displayName do Firebase Auth com o nome do Manager
+  try {
+    await updateProfile(user, { displayName: cleanName });
+  } catch (e) {
+    console.warn('⚠️ [Auth] Falha ao atualizar displayName no Firebase Auth:', e);
+  }
+
+  // 4. Reserva atômica do username na coleção /usernames/{usernameNormalizado}
+  const db = getFirestoreDb() || firestoreDb;
+  if (isFirebaseConfigured() && db) {
+    try {
+      const usernameDocRef = doc(db, 'usernames', validation.normalized);
+      await setDoc(usernameDocRef, {
+        uid: user.uid,
+        username: username.trim(),
+        usernameNormalizado: validation.normalized,
+        createdAt: new Date().toISOString(),
+      });
+    } catch (uErr) {
+      console.warn('⚠️ [Auth] Erro ao registrar reserva de username no Firestore:', uErr);
+    }
+  }
+
+  // 5. Inicializa o perfil oficial do Manager em /managers/{uid}
+  const profile = await managersService.createProfile(user.uid, {
+    name: cleanName,
+    email: internalEmail,
+    login: validation.normalized,
+    username: username.trim(),
+    usernameNormalizado: validation.normalized,
+  });
+
+  return { user, profile };
+}
+
+/**
+ * Realiza o login de um Manager utilizando exclusivamente Nome de usuário e Senha (sem e-mail).
+ * Suporta perfeitamente os 6 managers legados e os novos cadastros com username.
+ */
+export async function signInManagerWithUsername(
+  username: string,
+  pass: string
+): Promise<{ user: FirebaseUser; profile: ManagerProfile }> {
+  if (!username?.trim()) throw new Error('Por favor, informe seu nome de usuário.');
+  if (!pass) throw new Error('Por favor, informe sua senha.');
+
+  if (!firebaseAuth) {
+    throw new Error('Firebase Authentication não está inicializado.');
+  }
+
+  const cleanUser = username.trim();
+  const normalized = normalizeUsername(cleanUser);
+
+  // 1. Suporte direto caso o usuário informe um e-mail completo no campo de identificação
+  const isDirectEmail = cleanUser.includes('@');
+  let targetEmail = isDirectEmail ? cleanUser.toLowerCase() : getInternalAuthEmail(normalized);
+
+  // 2. Identifica se é um dos 6 managers canônicos pré-existentes
+  const canonicalManager = CANONICAL_MANAGER_LOGINS[normalized];
+  if (!isDirectEmail && canonicalManager) {
+    targetEmail = canonicalManager.email;
+  }
+
+  // 3. Consulta Firestore /usernames/{normalized} caso não seja canônico pré-configurado
+  const db = getFirestoreDb() || firestoreDb;
+  if (!isDirectEmail && !canonicalManager && isFirebaseConfigured() && db) {
+    try {
+      const uDocRef = doc(db, 'usernames', normalized);
+      const uSnap = await getDoc(uDocRef);
+      if (uSnap.exists()) {
+        const uData = uSnap.data();
+        if (uData?.uid) {
+          const mProfile = await managersService.getProfile(uData.uid);
+          if (mProfile?.email) {
+            targetEmail = mProfile.email;
+          }
+        }
+      }
+    } catch (e) {
+      console.warn('⚠️ [Auth] Consulta a /usernames na autenticação:', e);
+    }
+  }
+
+  let user: FirebaseUser | null = null;
+  try {
+    const cred = await signInWithEmailAndPassword(firebaseAuth, targetEmail, pass);
+    user = cred.user;
+  } catch (err: any) {
+    // Se o manager canônico falhou com o e-mail pré-existente, tenta com o formato internal
+    if (canonicalManager && (err.code === 'auth/user-not-found' || err.code === 'auth/invalid-credential')) {
+      try {
+        const defaultInternal = getInternalAuthEmail(normalized);
+        const cred = await signInWithEmailAndPassword(firebaseAuth, defaultInternal, pass);
+        user = cred.user;
+      } catch {
+        throw new Error('Nome de usuário ou senha incorretos. Verifique suas credenciais.');
+      }
+    } else if (err.code === 'auth/user-not-found' || err.code === 'auth/invalid-credential' || err.code === 'auth/wrong-password') {
+      throw new Error('Nome de usuário ou senha incorretos. Verifique suas credenciais.');
+    } else {
+      throw err;
+    }
+  }
+
+  if (!user) {
+    throw new Error('Falha ao autenticar.');
+  }
+
+  // Recupera ou inicializa o documento /managers/{uid}
+  let profile = await managersService.getProfile(user.uid);
+  if (!profile) {
+    profile = await managersService.createProfile(user.uid, {
+      name: user.displayName || cleanUser,
+      email: user.email || targetEmail,
+      login: normalized,
+      username: cleanUser,
+      usernameNormalizado: normalized,
+    });
+  } else if (!profile.username || !profile.usernameNormalizado) {
+    try {
+      profile = await managersService.updateManager(user.uid, {
+        username: cleanUser,
+        usernameNormalizado: normalized,
+      });
+    } catch {
+      // ignore
+    }
+  }
+
+  // Garante que o documento em /usernames/{normalized} esteja registrado
+  if (isFirebaseConfigured() && db) {
+    try {
+      const uRef = doc(db, 'usernames', normalized);
+      const uSnap = await getDoc(uRef);
+      if (!uSnap.exists()) {
+        await setDoc(uRef, {
+          uid: user.uid,
+          username: cleanUser,
+          usernameNormalizado: normalized,
+          createdAt: new Date().toISOString(),
+        });
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  return { user, profile };
+}
+
+/**
+ * Redefine a senha de um Manager diretamente pelo Administrador sem alterar UID, clube, saldo ou elenco.
+ */
+export async function adminResetManagerPassword(
+  managerUid: string,
+  newPass: string
+): Promise<void> {
+  if (!managerUid?.trim()) throw new Error('UID do manager é obrigatório.');
+  if (newPass.length < 6) throw new Error('A nova senha deve ter no mínimo 6 caracteres.');
+
+  try {
+    const res = await fetch('/api/auth/admin-reset-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ managerUid, newPass }),
+    });
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      throw new Error(data.error || 'Falha ao redefinir a senha do manager.');
+    }
+  } catch (err: any) {
+    console.error('⚠️ [Auth] Erro ao redefinir senha do manager via API:', err);
+    throw new Error(err.message || 'Falha ao redefinir senha do manager.');
   }
 }
 

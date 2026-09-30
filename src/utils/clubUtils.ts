@@ -78,48 +78,6 @@ export function generateValidClubId(clubName: string, clubIdHint?: string): stri
  * 3. Nome normalizado (sem acentos, minúsculas, ignorando espaços/pontuações)
  * 4. Nome curto (shortName) normalizado
  */
-export function findMatchingClub(clubNameOrId: string, clubs: Club[]): Club | undefined {
-  if (!clubNameOrId || !clubNameOrId.trim()) return undefined;
-  const raw = clubNameOrId.trim();
-  const cleanLower = raw.toLowerCase();
-  const withoutPrefix = cleanLower.replace(/^club-/, '');
-  const normTarget = normalizeClubComparisonKey(raw);
-
-  if (!normTarget && !cleanLower) return undefined;
-
-  return clubs.find((c) => {
-    // 1. ID exato ou com/sem prefixo
-    const cIdLower = (c.id || '').toLowerCase();
-    if (cIdLower === cleanLower) return true;
-    if (cIdLower === `club-${cleanLower}`) return true;
-    if (cIdLower.replace(/^club-/, '') === withoutPrefix) return true;
-
-    // 2. Slug
-    const cSlugLower = (c.slug || '').toLowerCase();
-    if (cSlugLower && (cSlugLower === cleanLower || cSlugLower === withoutPrefix)) return true;
-
-    // 3. Nome normalizado
-    const cNormName = normalizeClubComparisonKey(c.name);
-    if (cNormName && cNormName === normTarget) return true;
-
-    // 4. Slug normalizado
-    const cNormSlug = normalizeClubComparisonKey(c.slug);
-    if (cNormSlug && cNormSlug === normTarget) return true;
-
-    // 5. ShortName / Código normalizado
-    const cNormShort = normalizeClubComparisonKey(c.shortName);
-    if (cNormShort && cNormShort === normTarget) return true;
-
-    const cNormCode = normalizeClubComparisonKey(c.code);
-    if (cNormCode && cNormCode === normTarget) return true;
-
-    return false;
-  });
-}
-
-/**
- * Cria um objeto Club oficial e completo no padrão do FM Universe para novos clubes importados.
- */
 export function createFMUniverseClubObject(
   clubName: string,
   customClubId?: string
@@ -170,25 +128,128 @@ export function createFMUniverseClubObject(
   };
 }
 
-export const CANONICAL_CLUB_IDS = new Set([
+export const CANONICAL_CLUB_REAL_IDS = [
   'club-qowYWnG0EfUqrr1a5cHlu4UYmNB3', // Thales FC — Thales Henrique
   'club-NKijWNgl4ORYGpkESx1nvBLQpBx1', // Ninja FC — Rodrigo Mariano
-  'club-mutants',                       // Mutant's — Igor Vicente
-  'club-nos-travamos',                  // Nós Travamos — Leandro Vicente
-  'club-saopaulobrasil',                // SaoPauloBrasil — Thales Henrique
-  'club-ninguemsegura-fc',              // NinguemSegura FC — Rodrigo Mariano
+  'club-XTEQSFH1x9To3EuVESp54vCCFTf2', // Mutant's — Igor Vicente
+  'club-qBMw9GdVuiVkBB22ZJwVoW1uEXG3', // Nós Travamos — Leandro Vicente
+  'club-3dOrJ03rdGYipkflIjziZx8fd6d2', // SaoPauloBrasil — Thales Henrique
+  'club-zmm8RxW9iyXIpW5g0hWeqNiPlt12', // NinguemSegura FC — Rodrigo Mariano
+];
+
+export const CANONICAL_CLUB_SLUG_ALIASES = [
+  'club-mutants',
+  'club-nos-travamos',
+  'club-saopaulobrasil',
+  'club-ninguemsegura-fc',
+  'club-thales-fc',
+  'club-ninja-fc',
+];
+
+export const CANONICAL_CLUB_IDS = new Set([
+  ...CANONICAL_CLUB_REAL_IDS,
+  ...CANONICAL_CLUB_SLUG_ALIASES,
 ]);
+
+export const CANONICAL_MANAGER_UIDS = new Set([
+  'qowYWnG0EfUqrr1a5cHlu4UYmNB3',
+  'NKijWNgl4ORYGpkESx1nvBLQpBx1',
+  'XTEQSFH1x9To3EuVESp54vCCFTf2',
+  'qBMw9GdVuiVkBB22ZJwVoW1uEXG3',
+  '3dOrJ03rdGYipkflIjziZx8fd6d2',
+  'zmm8RxW9iyXIpW5g0hWeqNiPlt12',
+]);
+
+export const CLUB_ALIAS_TO_REAL_ID: Record<string, string> = {
+  'club-mutants': 'club-XTEQSFH1x9To3EuVESp54vCCFTf2',
+  'mutants': 'club-XTEQSFH1x9To3EuVESp54vCCFTf2',
+  'mutant-s': 'club-XTEQSFH1x9To3EuVESp54vCCFTf2',
+  'club-nos-travamos': 'club-qBMw9GdVuiVkBB22ZJwVoW1uEXG3',
+  'nos-travamos': 'club-qBMw9GdVuiVkBB22ZJwVoW1uEXG3',
+  'club-saopaulobrasil': 'club-3dOrJ03rdGYipkflIjziZx8fd6d2',
+  'saopaulobrasil': 'club-3dOrJ03rdGYipkflIjziZx8fd6d2',
+  'club-ninguemsegura-fc': 'club-zmm8RxW9iyXIpW5g0hWeqNiPlt12',
+  'ninguemsegura-fc': 'club-zmm8RxW9iyXIpW5g0hWeqNiPlt12',
+  'club-thales-fc': 'club-qowYWnG0EfUqrr1a5cHlu4UYmNB3',
+  'thales-fc': 'club-qowYWnG0EfUqrr1a5cHlu4UYmNB3',
+  'club-ninja-fc': 'club-NKijWNgl4ORYGpkESx1nvBLQpBx1',
+  'ninja-fc': 'club-NKijWNgl4ORYGpkESx1nvBLQpBx1',
+};
+
+export function resolveRealClubId(clubIdOrSlug?: string | null): string {
+  if (!clubIdOrSlug) return '';
+  const clean = clubIdOrSlug.trim();
+  if (CLUB_ALIAS_TO_REAL_ID[clean]) return CLUB_ALIAS_TO_REAL_ID[clean];
+  if (CLUB_ALIAS_TO_REAL_ID[clean.toLowerCase()]) return CLUB_ALIAS_TO_REAL_ID[clean.toLowerCase()];
+  return clean;
+}
+
+/**
+ * Localiza um clube na coleção usando correspondência flexível e normalizada:
+ * 1. ID exato (com ou sem prefixo 'club-') ou ID resolvido por alias
+ * 2. Slug do clube
+ * 3. Nome normalizado (sem acentos, minúsculas, ignorando espaços/pontuações)
+ * 4. Nome curto (shortName) normalizado
+ * 5. Manager ID / UID
+ */
+export function findMatchingClub(clubNameOrId: string, clubs: Club[]): Club | undefined {
+  if (!clubNameOrId || !clubNameOrId.trim()) return undefined;
+  const raw = clubNameOrId.trim();
+  const cleanLower = raw.toLowerCase();
+  const withoutPrefix = cleanLower.replace(/^club-/, '');
+  const normTarget = normalizeClubComparisonKey(raw);
+  const resolvedRealId = resolveRealClubId(raw).toLowerCase();
+
+  if (!normTarget && !cleanLower) return undefined;
+
+  return clubs.find((c) => {
+    // 1. ID exato, com prefixo, sem prefixo ou resolvido pelo alias
+    const cIdLower = (c.id || '').toLowerCase();
+    if (cIdLower === cleanLower) return true;
+    if (cIdLower === `club-${cleanLower}`) return true;
+    if (cIdLower.replace(/^club-/, '') === withoutPrefix) return true;
+    if (resolvedRealId && cIdLower === resolvedRealId) return true;
+
+    // 2. Slug
+    const cSlugLower = (c.slug || '').toLowerCase();
+    if (cSlugLower && (cSlugLower === cleanLower || cSlugLower === withoutPrefix)) return true;
+
+    // 3. Nome normalizado
+    const cNormName = normalizeClubComparisonKey(c.name);
+    if (cNormName && cNormName === normTarget) return true;
+
+    // 4. Slug normalizado
+    const cNormSlug = normalizeClubComparisonKey(c.slug);
+    if (cNormSlug && cNormSlug === normTarget) return true;
+
+    // 5. ShortName / Código normalizado
+    const cNormShort = normalizeClubComparisonKey(c.shortName);
+    if (cNormShort && cNormShort === normTarget) return true;
+
+    const cNormCode = normalizeClubComparisonKey(c.code);
+    if (cNormCode && cNormCode === normTarget) return true;
+
+    // 6. Manager ID / UID
+    if (c.managerId) {
+      const mIdLower = c.managerId.toLowerCase();
+      if (mIdLower === cleanLower || mIdLower === withoutPrefix) return true;
+    }
+
+    return false;
+  });
+}
 
 /**
  * Validação rigorosa dos 6 clubes canônicos com Manager que DEVEM permanecer:
  * - Thales FC — Thales Henrique (ID: club-qowYWnG0EfUqrr1a5cHlu4UYmNB3)
  * - Ninja FC — Rodrigo Mariano (ID: club-NKijWNgl4ORYGpkESx1nvBLQpBx1)
- * - Mutant's — Igor Vicente (ID: club-mutants)
- * - Nós Travamos — Leandro Vicente (ID: club-nos-travamos)
- * - SaoPauloBrasil — Thales Henrique (ID: club-saopaulobrasil)
- * - NinguemSegura FC — Rodrigo Mariano (ID: club-ninguemsegura-fc)
+ * - Mutant's — Igor Vicente (ID: club-XTEQSFH1x9To3EuVESp54vCCFTf2, alias: club-mutants)
+ * - Nós Travamos — Leandro Vicente (ID: club-qBMw9GdVuiVkBB22ZJwVoW1uEXG3, alias: club-nos-travamos)
+ * - SaoPauloBrasil — Thales Henrique (ID: club-3dOrJ03rdGYipkflIjziZx8fd6d2, alias: club-saopaulobrasil)
+ * - NinguemSegura FC — Rodrigo Mariano (ID: club-zmm8RxW9iyXIpW5g0hWeqNiPlt12, alias: club-ninguemsegura-fc)
  *
- * Remove clubes extras/duplicados identificando os 6 canônicos pelos vínculos atuais com os Managers.
+ * Utiliza o ID real do documento/UID existente no Firestore como identificador principal,
+ * mantendo compatibilidade total com os slugs legados e vínculos de managers.
  */
 export function isPreservedManagerClub(
   club?: Club | null,
@@ -197,15 +258,57 @@ export function isPreservedManagerClub(
   if (!club || !club.id) return false;
 
   const clubId = club.id.trim();
+  const cleanWithoutPrefix = clubId.replace(/^club-/, '');
+  const resolvedId = resolveRealClubId(clubId);
 
-  // 1. Identificação pelos vínculos atuais com os Managers reais
+  // 1. Identificação pelos IDs canônicos oficiais preservados (reais do Firestore e aliases legados)
+  if (
+    CANONICAL_CLUB_IDS.has(clubId) ||
+    CANONICAL_CLUB_IDS.has(`club-${cleanWithoutPrefix}`) ||
+    CANONICAL_CLUB_IDS.has(resolvedId)
+  ) {
+    return true;
+  }
+
+  // 2. Identificação por managerId / managerUid dos 6 managers conhecidos
+  if (club.managerId && CANONICAL_MANAGER_UIDS.has(club.managerId.trim())) {
+    return true;
+  }
+  if (CANONICAL_MANAGER_UIDS.has(cleanWithoutPrefix)) {
+    return true;
+  }
+
+  // 3. Identificação pelos vínculos atuais com os Managers reais
   if (managersList && managersList.length > 0) {
-    const isLinkedToManager = managersList.some((m) => m.clubId === clubId);
+    const isLinkedToManager = managersList.some((m) => {
+      if (!m) return false;
+      return (
+        m.clubId === clubId ||
+        (m.uid && clubId === `club-${m.uid}`) ||
+        (m.uid && cleanWithoutPrefix === m.uid) ||
+        (club.managerId && m.uid === club.managerId) ||
+        (m.clubId && club.slug && m.clubId === `club-${club.slug}`) ||
+        (m.clubId && resolveRealClubId(m.clubId) === clubId)
+      );
+    });
     if (isLinkedToManager) return true;
   }
 
-  // 2. Os 6 IDs canônicos oficiais preservados
-  if (CANONICAL_CLUB_IDS.has(clubId)) {
+  // 4. Identificação pelos nomes dos 6 clubes preservados
+  const normName = normalizeClubComparisonKey(club.name);
+  const normSlug = normalizeClubComparisonKey(club.slug);
+  const preservedNormalizedNames = new Set([
+    'thalesfc',
+    'ninjafc',
+    'mutants',
+    'nostravamos',
+    'saopaulobrasil',
+    'ninguemsegurafc',
+  ]);
+  if (normName && preservedNormalizedNames.has(normName)) {
+    return true;
+  }
+  if (normSlug && preservedNormalizedNames.has(normSlug)) {
     return true;
   }
 

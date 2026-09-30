@@ -14,6 +14,8 @@ export interface ManagerProfile {
   name: string;
   email: string;
   login?: string;
+  username?: string;
+  usernameNormalizado?: string;
   role: 'MANAGER';
   clubId: string | null;
   onboardingCompleted: boolean;

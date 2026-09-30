@@ -17,8 +17,10 @@ import {
   Mail,
   X,
   Users,
+  Key,
 } from 'lucide-react';
 import { managersService, RODRIGO_MARIANO_UID } from '../../services/managersService';
+import { adminResetManagerPassword } from '../../services/authService';
 import { dataStore } from '../../services/dataStore';
 import { ManagerProfile, Club } from '../../types';
 
@@ -50,6 +52,42 @@ export const AdminManagersPage: React.FC = () => {
   const [formError, setFormError] = useState<string | null>(null);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [toastMessage, setToastMessage] = useState<{ type: 'success' | 'error'; text: string } | null>(null);
+
+  // Reset password states
+  const [resetPasswordManager, setResetPasswordManager] = useState<ManagerProfile | null>(null);
+  const [newPassword, setNewPassword] = useState('');
+  const [confirmNewPassword, setConfirmNewPassword] = useState('');
+  const [resetError, setResetError] = useState<string | null>(null);
+  const [isResetting, setIsResetting] = useState(false);
+
+  // Submissão de Reset de Senha pelo Admin
+  const handleResetPasswordSubmit = async (e: React.FormEvent) => {
+    e.preventDefault();
+    if (!resetPasswordManager) return;
+    setResetError(null);
+
+    if (newPassword.length < 6) {
+      setResetError('A nova senha deve ter no mínimo 6 caracteres.');
+      return;
+    }
+    if (newPassword !== confirmNewPassword) {
+      setResetError('A confirmação de senha não confere com a nova senha digitada.');
+      return;
+    }
+
+    try {
+      setIsResetting(true);
+      await adminResetManagerPassword(resetPasswordManager.uid, newPassword);
+      showToast('success', `Senha do Manager "${resetPasswordManager.name}" redefinida com sucesso!`);
+      setResetPasswordManager(null);
+      setNewPassword('');
+      setConfirmNewPassword('');
+    } catch (err: any) {
+      setResetError(err.message || 'Falha ao redefinir a senha do manager.');
+    } finally {
+      setIsResetting(false);
+    }
+  };
 
   // Carrega lista de managers e clubes
   const loadData = async () => {
@@ -575,6 +613,19 @@ export const AdminManagersPage: React.FC = () => {
                           </button>
 
                           <button
+                            onClick={() => {
+                              setResetPasswordManager(mgr);
+                              setNewPassword('');
+                              setConfirmNewPassword('');
+                              setResetError(null);
+                            }}
+                            title="Redefinir Senha do Manager"
+                            className="p-1.5 rounded-lg border border-[#333] hover:border-amber-500/50 text-neutral-400 hover:text-amber-300 hover:bg-amber-950/30 transition-all"
+                          >
+                            <Key className="w-4 h-4" />
+                          </button>
+
+                          <button
                             onClick={() => handleToggleStatus(mgr)}
                             disabled={isRodrigo}
                             title={
@@ -1020,6 +1071,114 @@ export const AdminManagersPage: React.FC = () => {
                 Confirmar Desvinculação
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL REDEFINIR SENHA DO MANAGER PELO ADMIN */}
+      {resetPasswordManager && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+          <div className="bg-[#141414] border border-amber-500/40 rounded-2xl w-full max-w-md overflow-hidden shadow-2xl p-6 space-y-4">
+            <div className="flex items-center justify-between pb-3 border-b border-[#262626]">
+              <div className="flex items-center gap-3 text-amber-400">
+                <div className="p-2.5 bg-amber-500/10 rounded-xl border border-amber-500/30">
+                  <Key className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="text-base font-bold text-white">Redefinir Senha do Manager</h3>
+                  <p className="text-xs text-neutral-400">Recuperação administrativa de acesso</p>
+                </div>
+              </div>
+              <button
+                onClick={() => setResetPasswordManager(null)}
+                className="p-1 rounded-lg text-neutral-400 hover:text-white hover:bg-neutral-800 transition-colors"
+              >
+                <X className="w-5 h-5" />
+              </button>
+            </div>
+
+            <div className="p-3 bg-[#181818] border border-[#2a2a2a] rounded-xl text-xs space-y-1.5 text-neutral-300">
+              <div className="flex justify-between">
+                <span className="text-neutral-500">Manager:</span>
+                <span className="font-semibold text-white">{resetPasswordManager.name}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-neutral-500">Identificador/Login:</span>
+                <span className="font-mono text-purple-400">@{resetPasswordManager.login || resetPasswordManager.usernameNormalizado || resetPasswordManager.username}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-neutral-500">UID Oficial:</span>
+                <span className="font-mono text-neutral-400 text-[11px]">{resetPasswordManager.uid}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-neutral-500">Clube Vinculado:</span>
+                <span className="text-emerald-400 font-medium">{getClubName(resetPasswordManager.clubId)}</span>
+              </div>
+            </div>
+
+            <div className="p-2.5 bg-amber-950/20 border border-amber-500/20 rounded-lg text-[11px] text-amber-300/90 leading-relaxed">
+              🛡️ <strong>Garantia de Integridade:</strong> A redefinição de senha altera exclusivamente as credenciais de acesso. O UID, clube, saldo financeiro, elenco de jogadores e histórico do manager permanecem 100% inalterados.
+            </div>
+
+            {resetError && (
+              <div className="p-3 bg-red-950/40 border border-red-500/30 rounded-xl text-red-300 text-xs flex items-center gap-2">
+                <AlertTriangle className="w-4 h-4 shrink-0 text-red-400" />
+                <span>{resetError}</span>
+              </div>
+            )}
+
+            <form onSubmit={handleResetPasswordSubmit} className="space-y-3.5">
+              <div>
+                <label className="block text-xs font-semibold text-neutral-300 mb-1">
+                  Nova Senha (mínimo 6 caracteres)
+                </label>
+                <div className="relative">
+                  <Lock className="w-4 h-4 text-neutral-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="password"
+                    required
+                    placeholder="••••••••"
+                    value={newPassword}
+                    onChange={(e) => setNewPassword(e.target.value)}
+                    className="w-full pl-9 pr-3 py-2 bg-[#181818] border border-[#333] rounded-lg text-sm text-white placeholder-neutral-500 focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+              </div>
+
+              <div>
+                <label className="block text-xs font-semibold text-neutral-300 mb-1">
+                  Confirmar Nova Senha
+                </label>
+                <div className="relative">
+                  <Lock className="w-4 h-4 text-neutral-500 absolute left-3 top-1/2 -translate-y-1/2" />
+                  <input
+                    type="password"
+                    required
+                    placeholder="••••••••"
+                    value={confirmNewPassword}
+                    onChange={(e) => setConfirmNewPassword(e.target.value)}
+                    className="w-full pl-9 pr-3 py-2 bg-[#181818] border border-[#333] rounded-lg text-sm text-white placeholder-neutral-500 focus:outline-none focus:border-amber-500"
+                  />
+                </div>
+              </div>
+
+              <div className="flex items-center justify-end gap-3 pt-3 border-t border-[#262626]">
+                <button
+                  type="button"
+                  onClick={() => setResetPasswordManager(null)}
+                  className="px-4 py-2 text-xs font-medium text-neutral-400 hover:text-white transition-colors"
+                >
+                  Cancelar
+                </button>
+                <button
+                  type="submit"
+                  disabled={isResetting}
+                  className="px-5 py-2.5 bg-gradient-to-r from-amber-600 to-amber-500 hover:from-amber-500 hover:to-amber-400 text-white text-xs font-bold uppercase tracking-wider rounded-lg shadow-md transition-all disabled:opacity-50 cursor-pointer"
+                >
+                  {isResetting ? 'Redefinindo...' : 'Salvar Nova Senha'}
+                </button>
+              </div>
+            </form>
           </div>
         </div>
       )}

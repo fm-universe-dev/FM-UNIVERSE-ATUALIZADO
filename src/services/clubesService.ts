@@ -11,6 +11,11 @@ import {
   slugifyClubName,
   generateValidClubId,
   CANONICAL_CLUB_IDS,
+  CANONICAL_CLUB_REAL_IDS,
+  CANONICAL_CLUB_SLUG_ALIASES,
+  CANONICAL_MANAGER_UIDS,
+  resolveRealClubId,
+  isPreservedManagerClub,
 } from '../utils/clubUtils';
 
 export {
@@ -21,40 +26,12 @@ export {
   slugifyClubName,
   generateValidClubId,
   CANONICAL_CLUB_IDS,
+  CANONICAL_CLUB_REAL_IDS,
+  CANONICAL_CLUB_SLUG_ALIASES,
+  CANONICAL_MANAGER_UIDS,
+  resolveRealClubId,
+  isPreservedManagerClub,
 };
-
-/**
- * Validação rigorosa dos 6 clubes canônicos com Manager que DEVEM permanecer:
- * - Thales FC — Thales Henrique (ID: club-qowYWnG0EfUqrr1a5cHlu4UYmNB3)
- * - Ninja FC — Rodrigo Mariano (ID: club-NKijWNgl4ORYGpkESx1nvBLQpBx1)
- * - Mutant's — Igor Vicente (ID: club-mutants)
- * - Nós Travamos — Leandro Vicente (ID: club-nos-travamos)
- * - SaoPauloBrasil — Thales Henrique (ID: club-saopaulobrasil)
- * - NinguemSegura FC — Rodrigo Mariano (ID: club-ninguemsegura-fc)
- *
- * Remove clubes extras/duplicados identificando os 6 canônicos pelos vínculos atuais com os Managers.
- */
-export function isPreservedManagerClub(
-  club?: Club | null,
-  managersList?: ManagerProfile[]
-): boolean {
-  if (!club || !club.id) return false;
-
-  const clubId = club.id.trim();
-
-  // 1. Identificação pelos vínculos atuais com os Managers reais
-  if (managersList && managersList.length > 0) {
-    const isLinkedToManager = managersList.some((m) => m.clubId === clubId);
-    if (isLinkedToManager) return true;
-  }
-
-  // 2. Os 6 IDs canônicos oficiais preservados
-  if (CANONICAL_CLUB_IDS.has(clubId)) {
-    return true;
-  }
-
-  return false;
-}
 
 function ensureClubPreparation(club: Club): Club {
   if (club.id === 'club-qowYWnG0EfUqrr1a5cHlu4UYmNB3') {
@@ -72,7 +49,7 @@ export const clubesService = {
     const db = getFirestoreDb() || firestoreDb;
     let resultClubs: Club[] = [];
 
-    // Busca lista atual de managers para validação rigorosa dos vínculos canônicos
+    // Busca lista atual de managers para validação de vínculos
     const allManagers = await managersService.getAllManagers().catch(() => []);
 
     if (isFirebaseConfigured() && db) {
@@ -80,49 +57,34 @@ export const clubesService = {
         const colRef = collection(db, 'clubes');
         const snap = await getDocs(colRef);
         if (!snap.empty) {
-          const firestoreClubs = snap.docs.map((d) => ensureClubPreparation({ id: d.id, ...d.data() } as Club));
+          const firestoreClubs = snap.docs.map((d) => {
+            const data = d.data();
+            // Mantém d.id (ID real do documento no Firestore, ex: club-<uid>) como identificador principal
+            const clubId = d.id;
+            return ensureClubPreparation({
+              ...data,
+              id: clubId,
+              slug: data.slug || slugifyClubName(data.name || clubId),
+            } as Club);
+          });
 
-          // 1. Identifica os 6 documentos canônicos pelos vínculos atuais com os Managers
+          // Filtra os clubes preservados e deduplica por ID / nome
           const canonicalClubs: Club[] = [];
-          const extraClubsToDelete: Club[] = [];
-
           firestoreClubs.forEach((c) => {
             if (isPreservedManagerClub(c, allManagers)) {
-              if (!canonicalClubs.some((existing) => existing.id === c.id)) {
+              if (
+                !canonicalClubs.some(
+                  (existing) =>
+                    existing.id === c.id ||
+                    (existing.name && c.name && normalizeClubComparisonKey(existing.name) === normalizeClubComparisonKey(c.name))
+                )
+              ) {
                 canonicalClubs.push(c);
-              } else {
-                extraClubsToDelete.push(c);
               }
-            } else {
-              extraClubsToDelete.push(c);
             }
           });
 
-          // 2. Remove somente os clubes extras/duplicados que não fazem parte dessa lista canônica
-          if (extraClubsToDelete.length > 0) {
-            console.info(
-              `🧹 [clubesService] Removendo ${extraClubsToDelete.length} clubes extras/duplicados da coleção /clubes:`,
-              extraClubsToDelete.map((c) => `${c.name} (${c.id})`)
-            );
-            for (const extra of extraClubsToDelete) {
-              try {
-                await deleteDoc(doc(db, 'clubes', extra.id));
-                dataStore.deleteClub(extra.id);
-              } catch (delErr) {
-                console.warn(`⚠️ [clubesService] Falha ao excluir clube extra ${extra.id} do Firestore:`, delErr);
-              }
-            }
-          }
-
-          // Sincroniza dataStore local removendo clubes que foram excluídos do Firestore
-          const canonicalIdSet = new Set(canonicalClubs.map((c) => c.id));
-          const localClubs = dataStore.getClubs();
-          localClubs.forEach((c) => {
-            if (!canonicalIdSet.has(c.id)) {
-              dataStore.deleteClub(c.id);
-            }
-          });
-
+          // Sincroniza cache local dataStore com os clubes preservados do Firestore
           canonicalClubs.forEach((c) => {
             try {
               dataStore.saveClub(c);
@@ -130,6 +92,7 @@ export const clubesService = {
               // ignore
             }
           });
+
           resultClubs = canonicalClubs;
         }
       } catch (err) {
@@ -144,55 +107,41 @@ export const clubesService = {
         .map(ensureClubPreparation);
     }
 
-    // Regra estrita: A coleção final /clubes deve conter exatamente os 6 clubes canônicos
-    const filtered = resultClubs.filter((c) => isPreservedManagerClub(c, allManagers));
-    return filtered;
+    return resultClubs;
   },
 
   async getBySlug(slug: string): Promise<Club | null> {
-    const db = getFirestoreDb() || firestoreDb;
-    if (isFirebaseConfigured() && db) {
-      try {
-        const clubs = await this.getAll();
-        const found = clubs.find((c) => c.slug.toLowerCase() === slug.toLowerCase());
-        if (found) return found;
-      } catch (err) {
-        console.warn('Falha ao buscar clube por slug via Firestore.', err);
-      }
-    }
-    return dataStore.getClubBySlug(slug) || null;
+    const cleanSlug = slug?.trim().toLowerCase();
+    if (!cleanSlug) return null;
+    const all = await this.getAll();
+    const found = all.find(
+      (c) =>
+        (c.slug && c.slug.toLowerCase() === cleanSlug) ||
+        normalizeClubComparisonKey(c.slug) === normalizeClubComparisonKey(cleanSlug) ||
+        normalizeClubComparisonKey(c.name) === normalizeClubComparisonKey(cleanSlug) ||
+        c.id.toLowerCase() === cleanSlug ||
+        c.id.toLowerCase() === `club-${cleanSlug}`
+    );
+    if (found) return found;
+    return dataStore.getClubBySlug(cleanSlug) || null;
   },
 
   async getById(id: string): Promise<Club | null> {
     const cleanId = id?.trim();
     if (!cleanId) return null;
 
+    const resolvedId = resolveRealClubId(cleanId);
     const db = getFirestoreDb() || firestoreDb;
     if (isFirebaseConfigured() && db) {
       try {
-        // 1. Tenta pelo ID exato
-        let docRef = doc(db, 'clubes', cleanId);
-        let snap = await getDoc(docRef);
-        if (snap.exists()) {
-          const club = ensureClubPreparation({ id: snap.id, ...snap.data() } as Club);
-          try { dataStore.saveClub(club); } catch { /* ignore */ }
-          return club;
-        }
+        const targetIds = [cleanId];
+        if (resolvedId && resolvedId !== cleanId) targetIds.push(resolvedId);
+        if (!cleanId.startsWith('club-')) targetIds.push(`club-${cleanId}`);
+        else targetIds.push(cleanId.replace(/^club-/, ''));
 
-        // 2. Se não tiver prefixo 'club-', tenta com 'club-'
-        if (!cleanId.startsWith('club-')) {
-          docRef = doc(db, 'clubes', `club-${cleanId}`);
-          snap = await getDoc(docRef);
-          if (snap.exists()) {
-            const club = ensureClubPreparation({ id: snap.id, ...snap.data() } as Club);
-            try { dataStore.saveClub(club); } catch { /* ignore */ }
-            return club;
-          }
-        } else {
-          // 3. Se tiver prefixo 'club-', tenta sem 'club-'
-          const withoutPrefix = cleanId.replace(/^club-/, '');
-          docRef = doc(db, 'clubes', withoutPrefix);
-          snap = await getDoc(docRef);
+        for (const tid of targetIds) {
+          const docRef = doc(db, 'clubes', tid);
+          const snap = await getDoc(docRef);
           if (snap.exists()) {
             const club = ensureClubPreparation({ id: snap.id, ...snap.data() } as Club);
             try { dataStore.saveClub(club); } catch { /* ignore */ }
@@ -203,16 +152,15 @@ export const clubesService = {
         console.warn('Falha ao buscar clube por ID via Firestore.', err);
       }
     }
-    const local = dataStore.getClubById(cleanId);
+
+    const local = dataStore.getClubById(cleanId) || (resolvedId ? dataStore.getClubById(resolvedId) : undefined);
     if (local) return ensureClubPreparation(local);
 
-    // Fallback em getAll por ID, slug ou nome
+    // Fallback em getAll por ID, alias, slug ou nome
     const all = await this.getAll();
-    const cleanSlug = cleanId.replace(/^club-/, '').toLowerCase();
     const matched =
-      all.find((c) => c.id === cleanId) ||
-      all.find((c) => c.slug?.toLowerCase() === cleanSlug) ||
-      all.find((c) => c.name?.toLowerCase() === cleanId.toLowerCase()) ||
+      all.find((c) => c.id === cleanId || c.id === resolvedId) ||
+      findMatchingClub(cleanId, all) ||
       null;
 
     if (matched) {
@@ -538,12 +486,21 @@ export const clubesService = {
       'club-5',
       'club-NKijWNgl4ORYGpkESx1nvBLQpBx1',
       'club-qowYWnG0EfUqrr1a5cHlu4UYmNB3',
+      'club-XTEQSFH1x9To3EuVESp54vCCFTf2',
+      'club-qBMw9GdVuiVkBB22ZJwVoW1uEXG3',
+      'club-3dOrJ03rdGYipkflIjziZx8fd6d2',
+      'club-zmm8RxW9iyXIpW5g0hWeqNiPlt12',
       'club-mutants',
       'club-nos-travamos',
       'club-saopaulobrasil',
       'club-ninguemsegura-fc',
     ];
-    const isOfficial = CANONICAL_CLUB_IDS.has(id) || officialIds.includes(id) || officialCodes.includes(code.toUpperCase());
+    const isOfficial =
+      CANONICAL_CLUB_IDS.has(id) ||
+      CANONICAL_CLUB_IDS.has(resolveRealClubId(id)) ||
+      officialIds.includes(id) ||
+      isPreservedManagerClub(club) ||
+      officialCodes.includes(code.toUpperCase());
     const universeType = isOfficial ? 'OFFICIAL' : 'TEST_FICTITIOUS';
 
     // Lista de dependências ativas informativas (Exibidas na confirmação da exclusão administrativa)
@@ -948,9 +905,9 @@ export const clubesService = {
         foundedYear: 2024,
       },
       {
-        id: 'club-mutants',
+        id: 'club-XTEQSFH1x9To3EuVESp54vCCFTf2',
         name: "Mutant's",
-        slug: 'mutants',
+        slug: 'mutant-s',
         shortName: 'MUT',
         code: 'MUT',
         badge: '🧬',
@@ -961,7 +918,7 @@ export const clubesService = {
         transferBudget: 35000000,
         wageBudget: 3500000,
         balance: 35000000,
-        managerId: 'mgr-igor-vicente',
+        managerId: 'XTEQSFH1x9To3EuVESp54vCCFTf2',
         managerName: 'Igor Vicente',
         squadCount: 22,
         fansCount: 950000,
@@ -974,7 +931,7 @@ export const clubesService = {
         foundedYear: 2024,
       },
       {
-        id: 'club-nos-travamos',
+        id: 'club-qBMw9GdVuiVkBB22ZJwVoW1uEXG3',
         name: 'Nós Travamos',
         slug: 'nos-travamos',
         shortName: 'TRA',
@@ -987,7 +944,7 @@ export const clubesService = {
         transferBudget: 30000000,
         wageBudget: 3200000,
         balance: 30000000,
-        managerId: 'mgr-leandro-vicente',
+        managerId: 'qBMw9GdVuiVkBB22ZJwVoW1uEXG3',
         managerName: 'Leandro Vicente',
         squadCount: 22,
         fansCount: 880000,
@@ -1000,7 +957,7 @@ export const clubesService = {
         foundedYear: 2024,
       },
       {
-        id: 'club-saopaulobrasil',
+        id: 'club-3dOrJ03rdGYipkflIjziZx8fd6d2',
         name: 'SaoPauloBrasil',
         slug: 'saopaulobrasil',
         shortName: 'SPB',
@@ -1013,7 +970,7 @@ export const clubesService = {
         transferBudget: 40000000,
         wageBudget: 3800000,
         balance: 40000000,
-        managerId: 'mgr-thales-henrique-spb',
+        managerId: '3dOrJ03rdGYipkflIjziZx8fd6d2',
         managerName: 'Thales Henrique',
         squadCount: 23,
         fansCount: 1350000,
@@ -1026,7 +983,7 @@ export const clubesService = {
         foundedYear: 2024,
       },
       {
-        id: 'club-ninguemsegura-fc',
+        id: 'club-zmm8RxW9iyXIpW5g0hWeqNiPlt12',
         name: 'NinguemSegura FC',
         slug: 'ninguemsegura-fc',
         shortName: 'NSF',
@@ -1039,7 +996,7 @@ export const clubesService = {
         transferBudget: 42000000,
         wageBudget: 3900000,
         balance: 42000000,
-        managerId: 'mgr-rodrigo-mariano-ns',
+        managerId: 'zmm8RxW9iyXIpW5g0hWeqNiPlt12',
         managerName: 'Rodrigo Mariano',
         squadCount: 23,
         fansCount: 1100000,

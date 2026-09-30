@@ -3,7 +3,6 @@ import { motion, AnimatePresence } from 'motion/react';
 import {
   Shield,
   User,
-  Mail,
   Lock,
   ArrowRight,
   CheckCircle2,
@@ -13,6 +12,7 @@ import {
   LogOut,
   Trophy,
   Activity,
+  AtSign,
 } from 'lucide-react';
 import { useAuth } from '../../contexts/AuthContext';
 import { useNavigation } from '../../contexts/NavigationContext';
@@ -23,8 +23,8 @@ export const LoginPage: React.FC = () => {
     firebaseUser,
     isRealAdmin,
     managerProfile,
-    loginManagerWithEmail,
-    registerManagerWithEmail,
+    loginManagerWithUsername,
+    registerManagerWithUsername,
     logoutManager,
     loginWithGoogle,
     authError: contextAuthError,
@@ -33,7 +33,7 @@ export const LoginPage: React.FC = () => {
 
   const [mode, setMode] = useState<'login' | 'register'>('login');
   const [name, setName] = useState('');
-  const [email, setEmail] = useState('');
+  const [username, setUsername] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
 
@@ -68,15 +68,17 @@ export const LoginPage: React.FC = () => {
           <p className="text-sm text-slate-400 mb-6">
             Você está conectado como{' '}
             <span className="text-emerald-400 font-semibold">
-              {firebaseUser.displayName || managerProfile?.name || firebaseUser.email}
+              {managerProfile?.name || firebaseUser.displayName || managerProfile?.username || firebaseUser.email}
             </span>
           </p>
 
           <div className="p-4 rounded-xl bg-slate-950/60 border border-slate-800/80 mb-6 text-left space-y-2">
-            <div className="flex justify-between text-xs text-slate-400">
-              <span>E-mail:</span>
-              <span className="text-slate-200 font-mono">{firebaseUser.email}</span>
-            </div>
+            {managerProfile?.username && (
+              <div className="flex justify-between text-xs text-slate-400">
+                <span>Usuário:</span>
+                <span className="text-emerald-400 font-mono">@{managerProfile.username}</span>
+              </div>
+            )}
             <div className="flex justify-between text-xs text-slate-400">
               <span>Papel:</span>
               <span className="text-emerald-400 font-bold">
@@ -123,9 +125,9 @@ export const LoginPage: React.FC = () => {
     setLocalError(null);
     setSuccessMessage(null);
 
-    const cleanEmail = email.trim();
-    if (!cleanEmail) {
-      setLocalError('Por favor, informe seu e-mail.');
+    const cleanUsername = username.trim();
+    if (!cleanUsername) {
+      setLocalError('Por favor, informe seu nome de usuário.');
       return;
     }
     if (!password) {
@@ -135,7 +137,7 @@ export const LoginPage: React.FC = () => {
 
     setIsLoading(true);
     try {
-      const profile = await loginManagerWithEmail(cleanEmail, password);
+      const profile = await loginManagerWithUsername(cleanUsername, password);
       setSuccessMessage('Login efetuado com sucesso! Redirecionando...');
       setTimeout(() => {
         if (!profile.onboardingCompleted || !profile.clubId) {
@@ -157,14 +159,14 @@ export const LoginPage: React.FC = () => {
     setSuccessMessage(null);
 
     const cleanName = name.trim();
-    const cleanEmail = email.trim();
+    const cleanUsername = username.trim();
 
     if (!cleanName || cleanName.length < 3) {
-      setLocalError('Informe seu nome completo de treinador (mínimo 3 caracteres).');
+      setLocalError('Informe seu nome completo de Manager (mínimo 3 caracteres).');
       return;
     }
-    if (!cleanEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(cleanEmail)) {
-      setLocalError('Informe um endereço de e-mail válido.');
+    if (!cleanUsername) {
+      setLocalError('Informe o nome de usuário desejado.');
       return;
     }
     if (password.length < 6) {
@@ -178,8 +180,8 @@ export const LoginPage: React.FC = () => {
 
     setIsLoading(true);
     try {
-      await registerManagerWithEmail(cleanName, cleanEmail, password);
-      setSuccessMessage('Conta de treinador criada com sucesso! Vamos iniciar o setup do seu clube.');
+      await registerManagerWithUsername(cleanName, cleanUsername, password, confirmPassword);
+      setSuccessMessage('Conta de Manager criada com sucesso! Redirecionando para o setup do clube...');
       setTimeout(() => {
         navigate('/manager/setup');
       }, 500);
@@ -216,8 +218,8 @@ export const LoginPage: React.FC = () => {
           <h1 className="text-2xl font-black text-white uppercase tracking-wider">
             FM Universe
           </h1>
-          <h2 className="text-base font-bold text-emerald-400 mt-1">
-            {mode === 'login' ? 'Login do Manager' : 'Criar Conta de Manager'}
+          <h2 className="text-base font-bold text-emerald-400 mt-1 uppercase tracking-tight">
+            {mode === 'login' ? 'ENTRAR NO FM UNIVERSE' : 'CRIAR CONTA'}
           </h2>
           <p className="text-xs text-slate-400 mt-0.5">
             {mode === 'login'
@@ -294,16 +296,18 @@ export const LoginPage: React.FC = () => {
           <form onSubmit={handleLogin} className="space-y-4">
             <div>
               <label className="block text-xs font-semibold text-slate-300 mb-1.5 uppercase tracking-wider">
-                E-mail do Manager
+                Nome de usuário
               </label>
               <div className="relative">
-                <Mail className="w-4 h-4 text-slate-500 absolute left-3.5 top-3.5" />
+                <AtSign className="w-4 h-4 text-slate-500 absolute left-3.5 top-3.5" />
                 <input
-                  type="email"
+                  type="text"
                   required
-                  placeholder="seu.email@exemplo.com"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  placeholder="Seu nome de usuário"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
                   className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white placeholder-slate-500 text-sm focus:outline-none focus:border-emerald-500 transition-colors"
                 />
               </div>
@@ -354,7 +358,7 @@ export const LoginPage: React.FC = () => {
                 }}
                 className="text-xs text-slate-400 hover:text-emerald-400 transition-colors cursor-pointer"
               >
-                Não tem uma conta? <strong className="text-emerald-400 underline ml-1">Criar minha conta</strong>
+                Não tem uma conta? <strong className="text-emerald-400 underline ml-1">Criar conta</strong>
               </button>
             </div>
           </form>
@@ -363,7 +367,7 @@ export const LoginPage: React.FC = () => {
           <form onSubmit={handleRegister} className="space-y-3.5">
             <div>
               <label className="block text-xs font-semibold text-slate-300 mb-1 uppercase tracking-wider">
-                Nome do Treinador / Manager
+                Nome do Manager
               </label>
               <div className="relative">
                 <User className="w-4 h-4 text-slate-500 absolute left-3.5 top-3.5" />
@@ -380,16 +384,18 @@ export const LoginPage: React.FC = () => {
 
             <div>
               <label className="block text-xs font-semibold text-slate-300 mb-1 uppercase tracking-wider">
-                E-mail
+                Nome de usuário
               </label>
               <div className="relative">
-                <Mail className="w-4 h-4 text-slate-500 absolute left-3.5 top-3.5" />
+                <AtSign className="w-4 h-4 text-slate-500 absolute left-3.5 top-3.5" />
                 <input
-                  type="email"
+                  type="text"
                   required
-                  placeholder="seu.email@exemplo.com"
-                  value={email}
-                  onChange={(e) => setEmail(e.target.value)}
+                  autoCapitalize="none"
+                  autoCorrect="off"
+                  placeholder="Ex: alexferguson"
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
                   className="w-full pl-10 pr-4 py-2.5 rounded-xl bg-slate-950 border border-slate-800 text-white placeholder-slate-500 text-sm focus:outline-none focus:border-emerald-500 transition-colors"
                 />
               </div>
@@ -397,7 +403,7 @@ export const LoginPage: React.FC = () => {
 
             <div>
               <label className="block text-xs font-semibold text-slate-300 mb-1 uppercase tracking-wider">
-                Senha (mínimo 6 caracteres)
+                Senha
               </label>
               <div className="relative">
                 <Lock className="w-4 h-4 text-slate-500 absolute left-3.5 top-3.5" />
@@ -414,7 +420,7 @@ export const LoginPage: React.FC = () => {
 
             <div>
               <label className="block text-xs font-semibold text-slate-300 mb-1 uppercase tracking-wider">
-                Confirmar Senha
+                Confirmar senha
               </label>
               <div className="relative">
                 <Lock className="w-4 h-4 text-slate-500 absolute left-3.5 top-3.5" />
@@ -437,11 +443,11 @@ export const LoginPage: React.FC = () => {
               {isLoading ? (
                 <>
                   <Activity className="w-4 h-4 animate-spin" />
-                  <span>CRIANDO MINHA CONTA...</span>
+                  <span>CRIANDO CONTA...</span>
                 </>
               ) : (
                 <>
-                  <span>CRIAR MINHA CONTA</span>
+                  <span>CRIAR CONTA</span>
                   <ArrowRight className="w-4 h-4" />
                 </>
               )}

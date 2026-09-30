@@ -50,6 +50,62 @@ function getLocalManagers(): Record<string, ManagerProfile> {
     }
   }
 
+  // Garante os 6 managers canônicos oficiais da liga com seus respectivos clubId reais
+  const canonicalManagersData: Array<{ uid: string; name: string; clubId: string; email: string }> = [
+    {
+      uid: 'qowYWnG0EfUqrr1a5cHlu4UYmNB3',
+      name: 'Thales Henrique',
+      clubId: 'club-qowYWnG0EfUqrr1a5cHlu4UYmNB3',
+      email: 'thales.henrique@fmverse.com',
+    },
+    {
+      uid: 'XTEQSFH1x9To3EuVESp54vCCFTf2',
+      name: 'Igor Vicente',
+      clubId: 'club-XTEQSFH1x9To3EuVESp54vCCFTf2',
+      email: 'igor.vicente@fmverse.com',
+    },
+    {
+      uid: 'qBMw9GdVuiVkBB22ZJwVoW1uEXG3',
+      name: 'Leandro Vicente',
+      clubId: 'club-qBMw9GdVuiVkBB22ZJwVoW1uEXG3',
+      email: 'leandro.vicente@fmverse.com',
+    },
+    {
+      uid: '3dOrJ03rdGYipkflIjziZx8fd6d2',
+      name: 'Thales Henrique',
+      clubId: 'club-3dOrJ03rdGYipkflIjziZx8fd6d2',
+      email: 'thales.spb@fmverse.com',
+    },
+    {
+      uid: 'zmm8RxW9iyXIpW5g0hWeqNiPlt12',
+      name: 'Rodrigo Mariano',
+      clubId: 'club-zmm8RxW9iyXIpW5g0hWeqNiPlt12',
+      email: 'rodrigo.nsf@fmverse.com',
+    },
+  ];
+
+  canonicalManagersData.forEach((cm) => {
+    if (!current[cm.uid]) {
+      current[cm.uid] = {
+        uid: cm.uid,
+        name: cm.name,
+        email: cm.email,
+        login: cm.email.split('@')[0],
+        role: 'MANAGER',
+        clubId: cm.clubId,
+        onboardingCompleted: true,
+        status: 'ACTIVE',
+        avatar: '👔',
+        createdAt: '2026-09-10T10:00:00.000Z',
+        updatedAt: new Date().toISOString(),
+      };
+    } else {
+      if (!current[cm.uid].clubId) {
+        current[cm.uid].clubId = cm.clubId;
+      }
+    }
+  });
+
   return current;
 }
 
@@ -339,6 +395,8 @@ export const managersService = {
     data: {
       name?: string;
       login?: string;
+      username?: string;
+      usernameNormalizado?: string;
       email?: string;
       clubId?: string | null;
       status?: 'ACTIVE' | 'INACTIVE';
@@ -376,7 +434,9 @@ export const managersService = {
     const updatedProfile: ManagerProfile = {
       ...existing,
       name: data.name?.trim() || existing.name,
-      login: data.login?.trim().toLowerCase() || existing.login,
+      login: data.login?.trim().toLowerCase() || data.usernameNormalizado || existing.login,
+      username: data.username?.trim() || existing.username || existing.name,
+      usernameNormalizado: data.usernameNormalizado || existing.usernameNormalizado || existing.login,
       email: data.email?.trim().toLowerCase() || existing.email,
       status: nextStatus,
       clubId: nextStatus === 'ACTIVE' ? nextClubId : null,
@@ -520,7 +580,9 @@ export const managersService = {
             uid: cleanUid,
             name: data.name || 'Treinador',
             email: data.email || '',
-            login: data.login || data.email?.split('@')[0] || cleanUid,
+            login: data.login || data.usernameNormalizado || data.email?.split('@')[0] || cleanUid,
+            username: data.username || data.login || data.name || cleanUid,
+            usernameNormalizado: data.usernameNormalizado || data.login || cleanUid,
             role: 'MANAGER', // Força papel imutável no backend
             clubId: data.clubId || null,
             onboardingCompleted: Boolean(data.onboardingCompleted),
@@ -587,17 +649,29 @@ export const managersService = {
    */
   async createProfile(
     uid: string,
-    data: { name: string; email: string }
+    data: {
+      name: string;
+      email: string;
+      login?: string;
+      username?: string;
+      usernameNormalizado?: string;
+    }
   ): Promise<ManagerProfile> {
     const cleanUid = uid.trim();
     if (!cleanUid) throw new Error('UID inválido.');
 
     const now = new Date().toISOString();
+    const login = data.login || data.usernameNormalizado || data.email.trim().split('@')[0] || cleanUid;
+    const username = data.username || data.login || data.name || cleanUid;
+    const usernameNormalizado = data.usernameNormalizado || data.login || cleanUid;
+
     const profile: ManagerProfile = {
       uid: cleanUid,
       name: data.name.trim(),
       email: data.email.trim().toLowerCase(),
-      login: data.email.trim().split('@')[0],
+      login,
+      username,
+      usernameNormalizado,
       role: 'MANAGER', // Garantia estrita: nunca aceita role do frontend
       clubId: null,
       onboardingCompleted: false,

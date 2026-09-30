@@ -12,6 +12,8 @@ import {
   subscribeToAuthState,
   signInManagerWithEmail,
   registerManagerWithEmail as authRegisterManager,
+  signInManagerWithUsername,
+  registerManagerWithUsername as authRegisterManagerWithUsername,
   signOutUser,
   AdminVerificationResult,
 } from '../services/authService';
@@ -41,11 +43,13 @@ interface AuthContextType {
   logoutGoogle: () => Promise<void>;
   refreshAdminStatus: () => Promise<void>;
 
-  // NOVO: Sistema de Autenticação Real de Managers
+  // Sistema de Autenticação Real de Managers por Username e Senha
   isAuthInitialized: boolean;
   managerProfile: ManagerProfile | null;
   isLoadingManager: boolean;
   isManager: boolean;
+  loginManagerWithUsername: (username: string, pass: string) => Promise<ManagerProfile>;
+  registerManagerWithUsername: (name: string, username: string, pass: string, confirmPass: string) => Promise<ManagerProfile>;
   loginManagerWithEmail: (email: string, pass: string) => Promise<ManagerProfile>;
   registerManagerWithEmail: (name: string, email: string, pass: string) => Promise<ManagerProfile>;
   logoutManager: () => Promise<void>;
@@ -383,7 +387,84 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
     }
   };
 
-  // Login de Manager com E-mail e Senha
+  // Login de Manager com Nome de Usuário e Senha (sem e-mail)
+  const loginManagerWithUsername = async (username: string, pass: string): Promise<ManagerProfile> => {
+    setAuthError(null);
+    setIsLoadingManager(true);
+    try {
+      const { user: fbUser, profile } = await signInManagerWithUsername(username, pass);
+      setFirebaseUser(fbUser);
+      setManagerProfile(profile);
+      try {
+        localStorage.setItem('fmu_current_manager_profile', JSON.stringify(profile));
+      } catch {
+        // ignore
+      }
+
+      if (profile.clubId) {
+        const club = await clubesService.getById(profile.clubId);
+        if (club) setManagedClub(club);
+      }
+
+      setUser({
+        id: fbUser.uid,
+        name: profile.name,
+        email: profile.email,
+        role: 'MANAGER',
+        managedClubId: profile.clubId || '',
+      });
+
+      return profile;
+    } catch (err: unknown) {
+      setAuthError((err as Error).message);
+      throw err;
+    } finally {
+      setIsLoadingManager(false);
+    }
+  };
+
+  // Cadastro de Manager com Nome de Usuário e Senha (sem e-mail)
+  const registerManagerWithUsername = async (
+    name: string,
+    username: string,
+    pass: string,
+    confirmPass: string
+  ): Promise<ManagerProfile> => {
+    setAuthError(null);
+    setIsLoadingManager(true);
+    try {
+      const { user: fbUser, profile } = await authRegisterManagerWithUsername({
+        name,
+        username,
+        pass,
+        confirmPass,
+      });
+      setFirebaseUser(fbUser);
+      setManagerProfile(profile);
+      try {
+        localStorage.setItem('fmu_current_manager_profile', JSON.stringify(profile));
+      } catch {
+        // ignore
+      }
+
+      setUser({
+        id: fbUser.uid,
+        name: profile.name,
+        email: profile.email,
+        role: 'MANAGER',
+        managedClubId: '',
+      });
+
+      return profile;
+    } catch (err: unknown) {
+      setAuthError((err as Error).message);
+      throw err;
+    } finally {
+      setIsLoadingManager(false);
+    }
+  };
+
+  // Login de Manager com E-mail e Senha (retrocompatibilidade)
   const loginManagerWithEmail = async (email: string, pass: string): Promise<ManagerProfile> => {
     setAuthError(null);
     setIsLoadingManager(true);
@@ -630,6 +711,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         managerProfile,
         isLoadingManager,
         isManager,
+        loginManagerWithUsername,
+        registerManagerWithUsername,
         loginManagerWithEmail,
         registerManagerWithEmail,
         logoutManager,

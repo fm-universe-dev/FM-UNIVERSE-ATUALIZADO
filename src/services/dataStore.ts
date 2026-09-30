@@ -29,6 +29,7 @@ import {
   findMatchingClub,
   createFMUniverseClubObject,
   isPreservedManagerClub,
+  resolveRealClubId,
 } from '../utils/clubUtils';
 import {
   mockClubs,
@@ -985,17 +986,24 @@ class DataStore {
     const exact = this.clubs.find((c) => c.id === cleanId);
     if (exact) return exact;
 
-    // 2. Busca exata com ou sem prefixo 'club-'
+    // 2. Busca por ID resolvido pelo alias (ex: club-mutants -> club-XTEQSFH1x9To3EuVESp54vCCFTf2)
+    const resolvedId = resolveRealClubId(cleanId);
+    if (resolvedId && resolvedId !== cleanId) {
+      const matchResolved = this.clubs.find((c) => c.id === resolvedId);
+      if (matchResolved) return matchResolved;
+    }
+
+    // 3. Busca exata com ou sem prefixo 'club-'
     const cleanSlug = cleanId.replace(/^club-/, '').toLowerCase();
     const exactPrefixed = this.clubs.find((c) => c.id === `club-${cleanSlug}` || c.id === cleanSlug);
     if (exactPrefixed) return exactPrefixed;
 
-    // 3. Busca por slug exato
+    // 4. Busca por slug exato
     const slugMatch = this.clubs.find((c) => c.slug?.toLowerCase() === cleanSlug);
     if (slugMatch) return slugMatch;
 
-    // 4. Busca por nome exato
-    return this.clubs.find((c) => c.name?.toLowerCase() === cleanId.toLowerCase());
+    // 5. Busca flexível normalizada
+    return findMatchingClub(cleanId, this.clubs);
   }
 
   public saveClub(club: Club): void {
