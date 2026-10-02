@@ -9,6 +9,7 @@
     "start": "node server.js",
     "preview": "vite preview",
     "clean": "rm -rf dist",
+    "test": "tsx src/runAllTests.ts",
     "lint": "tsc --noEmit"
   },
   "dependencies": {

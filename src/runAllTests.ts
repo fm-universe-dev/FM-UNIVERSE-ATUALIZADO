@@ -18,6 +18,7 @@ if (typeof globalThis.localStorage === 'undefined') {
 
 import { runFM26ImporterTests } from './services/fm26Importer.test';
 import { runComprehensiveFM26ParserTests } from './services/fm26ParserComprehensive.test';
+import { runSistemaFinanceiroTests } from './services/sistemaFinanceiro.test';
 
 async function main() {
   console.log('====================================================');
@@ -36,6 +37,13 @@ async function main() {
 
     console.log('\n--- 2. Executando Bateria Abrangente do Parser CSV FM26 ---');
     runComprehensiveFM26ParserTests();
+
+    console.log('\n--- 3. Executando Bateria do Sistema Financeiro Oficial ---');
+    const finRes = runSistemaFinanceiroTests();
+    if (!finRes.passed) {
+      console.error('Falhas nos testes do sistema financeiro!');
+      process.exit(1);
+    }
 
     console.log('\n====================================================');
     console.log('  TODOS OS TESTES FORAM EXECUTADOS COM SUCESSO (OK) ');

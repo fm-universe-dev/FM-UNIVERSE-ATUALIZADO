@@ -17,6 +17,7 @@ import { temporadasService } from './temporadasService';
 import { adminFinancasService } from './adminFinancasService';
 import { matchSimulationService } from './matchSimulationService';
 import { notificacoesService } from './notificacoesService';
+import { sistemaFinanceiroService } from './sistemaFinanceiroService';
 
 export interface PendingRoundInfo {
   competition: Competition;
@@ -551,24 +552,19 @@ export class SeasonMotorService {
 
       // RECEITAS DA RODADA
       // 1. Bilheteria (somente quando for mandante)
+      // 1. Bilheteria (Preço-base oficial da Liga: R$ 100,00 por torcedor no caixa do mandante)
       let ticketSales = 0;
       if (isHomeMatch) {
-        const ticketBase = attendance * adminFinConfig.matchday.ticketAveragePrice;
-        const concessions = adminFinConfig.matchday.concessionsRevenuePerMatch || 0;
-        const parking = adminFinConfig.matchday.parkingAndCommercialRevenue || 0;
-        ticketSales = ticketBase + concessions + parking;
+        const ticketPrice = adminFinConfig.matchday?.ticketBasePrice || adminFinConfig.matchday?.ticketAveragePrice || 100;
+        ticketSales = attendance * ticketPrice;
       }
 
-      // 2. Direitos de TV (por rodada homologada)
-      const tvRights = adminFinConfig.tvRights.amountPerRound || 0;
+      // 2. Direitos de TV (Oficial da Liga: R$ 3.000.000,00 por clube por rodada)
+      const tvRights = adminFinConfig.tvRights?.amountPerRound || 3000000;
 
-      // 3. Patrocínios exclusivos por rodada (apenas contratos homologados por rodada)
-      const activeSponsors = adminFinConfig.sponsors.filter((s) => s.status === 'ATIVO');
-      const sponsorships = activeSponsors.reduce((sum, s) => {
-        if (s.amountPerRound && s.amountPerRound > 0) return sum + s.amountPerRound;
-        if (s.paymentMethod === 'POR_RODADA') return sum + Math.round(s.contractValue / (competition.roundsCount || 10));
-        return sum; // Patrocínios mensais entram integralmente no Fechamento Mensal
-      }, 0);
+      // 3. Patrocínios: Regra oficial FM Universe paga R$ 8.000.000 no Fechamento a cada 4 rodadas
+      const activeSponsors = adminFinConfig.sponsors?.filter((s) => s.status === 'ATIVO') || [];
+      const sponsorships = 0; // O patrocínio de R$ 8M é creditado no Fechamento a cada 4 rodadas (RECEITA_PATROCINIO)
 
       // 4. Bônus de Patrocínio e Premiação Esportiva da Liga
       let sponsorBonus = 0;
@@ -624,8 +620,10 @@ export class SeasonMotorService {
       if (ticketSales > 0 && isHomeMatch) {
         const balBefore = runningBalance;
         runningBalance += ticketSales;
+        const ticketKey = sistemaFinanceiroService.getMatchTicketRevenueKey(season.year, userClub.id, userSimulatedMatch.id, roundNumber);
         ledgerEntries.push({
-          id: `fin-r${roundNumber}-ticket-${Date.now()}-1`,
+          id: ticketKey,
+          operationId: ticketKey,
           clubId: userClub.id,
           seasonId: season.year,
           date: userSimulatedMatch.date,
@@ -633,7 +631,7 @@ export class SeasonMotorService {
           season: season.year,
           type: 'INCOME',
           inOut: 'CREDIT',
-          operationType: 'MATCH_TICKET_REVENUE',
+          operationType: 'RECEITA_INGRESSOS',
           category: 'BILHETERIA',
           transactionType: 'Receita de Matchday',
           description: `Bilheteria - ${userSimulatedMatch.homeClubName} x ${userSimulatedMatch.awayClubName}`,
@@ -648,8 +646,10 @@ export class SeasonMotorService {
       if (tvRights > 0) {
         const balBefore = runningBalance;
         runningBalance += tvRights;
+        const tvKey = sistemaFinanceiroService.getRoundTvRevenueKey(season.year, userClub.id, roundNumber);
         ledgerEntries.push({
-          id: `fin-r${roundNumber}-tv-${Date.now()}-2`,
+          id: tvKey,
+          operationId: tvKey,
           clubId: userClub.id,
           seasonId: season.year,
           date: userSimulatedMatch.date,
@@ -657,7 +657,7 @@ export class SeasonMotorService {
           season: season.year,
           type: 'INCOME',
           inOut: 'CREDIT',
-          operationType: 'TV_REVENUE',
+          operationType: 'RECEITA_TV',
           category: 'DIREITOS_TV',
           transactionType: 'Cota de Televisão',
           description: `Cota de Transmissão de TV • Rodada ${roundNumber}`,
@@ -858,6 +858,22 @@ export class SeasonMotorService {
 
       // Marca esta rodada como processada (Idempotência estrita: temporadaId + competicaoId + rodada)
       this.markRoundProcessed(temporadaId, competicaoId, roundNumber);
+
+      // Regra Oficial FM Universe: Fechamento a cada 4 rodadas (1 período/mês financeiro)
+      if (roundNumber % 4 === 0) {
+        const periodNumber = Math.floor(roundNumber / 4);
+        try {
+          await sistemaFinanceiroService.processPeriodClosure({
+            clubId: userClub.id,
+            periodNumber,
+            seasonId: season.year,
+            closureDate: userSimulatedMatch.date,
+          });
+          console.info(`✅ [seasonMotorService] Período Financeiro ${periodNumber} fechado com sucesso para ${userClub.name} (Rodadas ${roundNumber - 3} a ${roundNumber}).`);
+        } catch (err) {
+          console.warn('⚠️ [seasonMotorService] Fechamento do período financeiro usou contingência:', err);
+        }
+      }
 
       // Log do SNAPSHOT DEPOIS DA EXECUÇÃO
       console.log('====================================================');

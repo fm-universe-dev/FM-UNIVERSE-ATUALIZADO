@@ -110,8 +110,22 @@ class DataStore {
       const isCleanupCompleted =
         typeof localStorage !== 'undefined' &&
         localStorage.getItem('fmu_cleanup_215_completed') === 'true';
-      if (isCleanupCompleted || this.clubs.some((c) => !isPreservedManagerClub(c))) {
-        this.clubs = this.clubs.filter((c) => isPreservedManagerClub(c));
+
+      let localManagersList: Array<{ uid?: string; login?: string; clubId?: string | null; name?: string }> | undefined;
+      try {
+        if (typeof localStorage !== 'undefined') {
+          const rawMgrs = localStorage.getItem('fmu_managers_cache');
+          if (rawMgrs) {
+            const parsed = JSON.parse(rawMgrs);
+            localManagersList = Object.values(parsed);
+          }
+        }
+      } catch {
+        // ignore
+      }
+
+      if (isCleanupCompleted || this.clubs.some((c) => !isPreservedManagerClub(c, localManagersList))) {
+        this.clubs = this.clubs.filter((c) => isPreservedManagerClub(c, localManagersList));
         // Garante que os 6 clubes oficiais com Manager estejam presentes
         mockClubs.forEach((mClub) => {
           if (!this.clubs.some((c) => c.id === mClub.id)) {
@@ -119,6 +133,30 @@ class DataStore {
           }
         });
         this.saveToStorage(STORAGE_KEYS.CLUBS, this.clubs);
+      }
+
+      // Mescla também quaisquer clubes presentes no cache persistente fmu_clubes_cache
+      try {
+        if (typeof localStorage !== 'undefined') {
+          const rawClubsCache = localStorage.getItem('fmu_clubes_cache');
+          if (rawClubsCache) {
+            const cachedClubs = JSON.parse(rawClubsCache);
+            if (Array.isArray(cachedClubs)) {
+              let addedAny = false;
+              cachedClubs.forEach((cc: Club) => {
+                if (cc && cc.id && !this.clubs.some((c) => c.id === cc.id)) {
+                  this.clubs.push(cc);
+                  addedAny = true;
+                }
+              });
+              if (addedAny) {
+                this.saveToStorage(STORAGE_KEYS.CLUBS, this.clubs);
+              }
+            }
+          }
+        }
+      } catch {
+        // ignore
       }
       this.competitions = this.loadFromStorage(STORAGE_KEYS.COMPETITIONS, mockCompetitions);
       this.players = this.loadFromStorage(STORAGE_KEYS.PLAYERS, mockPlayers);

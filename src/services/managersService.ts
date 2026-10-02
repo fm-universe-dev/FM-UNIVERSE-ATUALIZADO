@@ -6,9 +6,84 @@ import { dataStore } from './dataStore';
 
 const MANAGERS_COLLECTION = 'managers';
 const LOCAL_MANAGERS_KEY = 'fmu_managers_cache';
+const MANAGERS_SYNC_META_KEY = 'fmu_managers_sync_meta';
 
 export const RODRIGO_MARIANO_UID = 'NKijWNgl4ORYGpkESx1nvBLQpBx1';
 export const RODRIGO_MARIANO_CLUB_ID = 'club-NKijWNgl4ORYGpkESx1nvBLQpBx1';
+
+export interface ManagersSyncStatus {
+  source: 'firestore' | 'cache' | 'fallback';
+  isQuotaExceeded: boolean;
+  lastSyncTime: string | null;
+  error: string | null;
+  totalLoaded: number;
+}
+
+let lastSyncStatus: ManagersSyncStatus = {
+  source: 'fallback',
+  isQuotaExceeded: false,
+  lastSyncTime: null,
+  error: null,
+  totalLoaded: 6,
+};
+
+// Carrega metadados salvos previamente
+try {
+  if (typeof localStorage !== 'undefined') {
+    const rawMeta = localStorage.getItem(MANAGERS_SYNC_META_KEY);
+    if (rawMeta) {
+      lastSyncStatus = JSON.parse(rawMeta);
+    }
+  }
+} catch {
+  // ignore
+}
+
+export function isFirestoreQuotaError(err: any): boolean {
+  if (!err) return false;
+  const code = String(err.code || '');
+  const message = String(err.message || '').toLowerCase();
+  return (
+    code === 'resource-exhausted' ||
+    message.includes('resource-exhausted') ||
+    message.includes('resource exhausted') ||
+    message.includes('quota') ||
+    message.includes('limit exceeded')
+  );
+}
+
+function saveSyncMeta(status: ManagersSyncStatus): void {
+  lastSyncStatus = status;
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(MANAGERS_SYNC_META_KEY, JSON.stringify(status));
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function getStoredSyncMeta(): ManagersSyncStatus | null {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const raw = localStorage.getItem(MANAGERS_SYNC_META_KEY);
+      if (raw) return JSON.parse(raw);
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+function saveAllLocalManagers(managers: Record<string, ManagerProfile>): void {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(LOCAL_MANAGERS_KEY, JSON.stringify(managers));
+    }
+  } catch (e) {
+    console.warn('⚠️ [managersService] Falha ao persistir cache local de managers:', e);
+  }
+}
 
 function getLocalManagers(): Record<string, ManagerProfile> {
   let current: Record<string, ManagerProfile> = {};
@@ -122,12 +197,27 @@ function saveLocalManager(profile: ManagerProfile): void {
 
 export const managersService = {
   /**
-   * Obtém todos os Managers cadastrados no sistema, consolidando Firestore,
-   * cache local e garantindo o reconhecimento de Rodrigo Mariano / Ninja FC.
+   * Obtém o status atual de sincronização dos managers.
    */
-  async getAllManagers(): Promise<ManagerProfile[]> {
+  getSyncStatus(): ManagersSyncStatus {
+    return { ...lastSyncStatus };
+  },
+
+  /**
+   * Obtém todos os Managers cadastrados no sistema.
+   * Regras estritas:
+   * - A fonte principal continua sendo os dados reais persistidos no Firestore.
+   * - Salva todos os managers reais lidos no cache local persistente (localStorage).
+   * - Em caso de falha por cota do Firestore (resource-exhausted), NUNCA substitui os dados reais por uma lista canônica fixa.
+   * - Preserva a última lista válida conhecida do cache e marca o status de sincronização apropriado.
+   * - Não remove managers se a leitura do clube falhar temporariamente.
+   */
+  async getAllManagers(forceRefresh = false): Promise<ManagerProfile[]> {
     const localMap = getLocalManagers();
     const db = getFirestoreDb() || firestoreDb;
+    let firestoreReadSuccess = false;
+    let quotaErrorDetected = false;
+    let caughtError: any = null;
 
     if (isFirebaseConfigured() && db) {
       try {
@@ -168,31 +258,100 @@ export const managersService = {
               };
             }
           });
+
+          firestoreReadSuccess = true;
+          // Persiste a lista completa no cache local para que falhas de cota futuras não descartem novos managers
+          saveAllLocalManagers(localMap);
+
+          const now = new Date().toISOString();
+          const meta: ManagersSyncStatus = {
+            source: 'firestore',
+            isQuotaExceeded: false,
+            lastSyncTime: now,
+            error: null,
+            totalLoaded: Object.keys(localMap).length,
+          };
+          saveSyncMeta(meta);
+          console.info(`✅ [managersService] Sucesso na leitura do Firestore: ${snap.docs.length} registros persistidos consolidados.`);
+        } else {
+          firestoreReadSuccess = true;
         }
-      } catch (err) {
-        console.warn('⚠️ [managersService] Falha ao consultar lista de managers no Firestore. Usando cache local.', err);
+      } catch (err: any) {
+        caughtError = err;
+        quotaErrorDetected = isFirestoreQuotaError(err);
+
+        if (quotaErrorDetected) {
+          console.warn('⚠️ [managersService] Falha por COTA no Firestore (resource-exhausted). Preservando última sincronização válida em cache:', err);
+        } else {
+          console.warn('⚠️ [managersService] Falha ao consultar lista de managers no Firestore. Preservando última sincronização válida:', err);
+        }
       }
     }
 
-    // Sincroniza com clubes que possuem managerId já configurado no dataStore
-    const clubs = dataStore.getClubs();
-    clubs.forEach((c) => {
-      if (c.managerId && !localMap[c.managerId]) {
-        localMap[c.managerId] = {
-          uid: c.managerId,
-          name: c.managerName || 'Treinador',
-          email: `${c.managerId.toLowerCase()}@fmverse.com`,
-          login: c.managerId.toLowerCase(),
-          role: 'MANAGER',
-          clubId: c.id,
-          onboardingCompleted: true,
-          status: 'ACTIVE',
-          avatar: '👔',
-          createdAt: c.createdAt || new Date().toISOString(),
-          updatedAt: new Date().toISOString(),
-        };
+    if (!firestoreReadSuccess) {
+      // Quando a leitura do Firestore falha (por cota ou conectividade):
+      // 1. Resgata do localStorage a última lista válida completa de managers salvos anteriormente
+      let cachedMap: Record<string, ManagerProfile> = {};
+      try {
+        if (typeof localStorage !== 'undefined') {
+          const raw = localStorage.getItem(LOCAL_MANAGERS_KEY);
+          if (raw) cachedMap = JSON.parse(raw);
+        }
+      } catch {
+        // ignore
       }
-    });
+
+      // 2. Mescla o cache completo sobre o localMap para garantir que Ruan, Isaac e novos managers NÃO sejam perdidos
+      for (const [uid, cachedProfile] of Object.entries(cachedMap)) {
+        if (!localMap[uid]) {
+          localMap[uid] = cachedProfile;
+        } else {
+          // Se o perfil em memória perdeu o vínculo com o clube temporariamente, restaura do cache
+          if (cachedProfile.clubId && !localMap[uid].clubId) {
+            localMap[uid].clubId = cachedProfile.clubId;
+          }
+        }
+      }
+
+      const meta = getStoredSyncMeta();
+      const totalCount = Object.keys(localMap).length;
+      const isKnownCache = Boolean(meta?.lastSyncTime) || totalCount > 6;
+
+      const updatedMeta: ManagersSyncStatus = {
+        source: isKnownCache ? 'cache' : 'fallback',
+        isQuotaExceeded: quotaErrorDetected,
+        lastSyncTime: meta?.lastSyncTime || lastSyncStatus.lastSyncTime || null,
+        error: quotaErrorDetected
+          ? 'Cota de leitura do Firestore excedida (resource-exhausted). Dados preservados do cache mais recente.'
+          : caughtError?.message || 'Falha temporária ao ler dados do Firestore.',
+        totalLoaded: totalCount,
+      };
+      saveSyncMeta(updatedMeta);
+    }
+
+    // Sincroniza com clubes que possuem managerId já configurado no dataStore
+    try {
+      const clubs = dataStore.getClubs();
+      clubs.forEach((c) => {
+        if (c.managerId && !localMap[c.managerId]) {
+          localMap[c.managerId] = {
+            uid: c.managerId,
+            name: c.managerName || 'Treinador',
+            email: `${c.managerId.toLowerCase()}@fmverse.com`,
+            login: c.managerId.toLowerCase(),
+            role: 'MANAGER',
+            clubId: c.id,
+            onboardingCompleted: true,
+            status: 'ACTIVE',
+            avatar: '👔',
+            createdAt: c.createdAt || new Date().toISOString(),
+            updatedAt: new Date().toISOString(),
+          };
+        }
+      });
+    } catch (e) {
+      console.warn('⚠️ [managersService] Falha não impeditiva ao sincronizar com dataStore.getClubs():', e);
+    }
 
     const list = Object.values(localMap);
     // Ordena colocando Rodrigo Mariano no topo e depois por nome
@@ -591,9 +750,16 @@ export const managersService = {
             createdAt: data.createdAt || new Date().toISOString(),
             updatedAt: data.updatedAt || new Date().toISOString(),
           };
+        } else if (snap && !snap.exists()) {
+          console.info(`ℹ️ [managersService] Documento /managers/${cleanUid} não existe no Firestore.`);
         }
-      } catch (err) {
-        console.warn(`⚠️ [managersService] Erro ao consultar /managers/${cleanUid}:`, err);
+      } catch (err: any) {
+        const isQuota = isFirestoreQuotaError(err);
+        if (isQuota) {
+          console.warn(`⚠️ [managersService] Erro de COTA ao consultar /managers/${cleanUid}. NÃO interpretado como ausência do documento. Preservando cache local:`, err);
+        } else {
+          console.warn(`⚠️ [managersService] Erro temporário de rede/leitura ao consultar /managers/${cleanUid}. Preservando cache:`, err);
+        }
       }
     }
 

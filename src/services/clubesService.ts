@@ -2,7 +2,7 @@ import { Club, ClubAuditReport, ManagerProfile } from '../types';
 import { isFirebaseConfigured, firestoreDb, getFirestoreDb } from '../config/firebase';
 import { dataStore } from './dataStore';
 import { collection, getDocs, doc, getDoc, setDoc, deleteDoc, query, where, updateDoc, writeBatch } from 'firebase/firestore';
-import { managersService } from './managersService';
+import { managersService, isFirestoreQuotaError } from './managersService';
 import {
   isFreeAgentClub,
   findMatchingClub,
@@ -33,6 +33,84 @@ export {
   isPreservedManagerClub,
 };
 
+const LOCAL_CLUBS_KEY = 'fmu_clubes_cache';
+const CLUBS_SYNC_META_KEY = 'fmu_clubes_sync_meta';
+
+export interface ClubesSyncStatus {
+  source: 'firestore' | 'cache' | 'fallback';
+  isQuotaExceeded: boolean;
+  lastSyncTime: string | null;
+  error: string | null;
+  totalLoaded: number;
+}
+
+let lastClubsSyncStatus: ClubesSyncStatus = {
+  source: 'fallback',
+  isQuotaExceeded: false,
+  lastSyncTime: null,
+  error: null,
+  totalLoaded: 6,
+};
+
+try {
+  if (typeof localStorage !== 'undefined') {
+    const rawMeta = localStorage.getItem(CLUBS_SYNC_META_KEY);
+    if (rawMeta) lastClubsSyncStatus = JSON.parse(rawMeta);
+  }
+} catch {
+  // ignore
+}
+
+function saveClubsSyncMeta(status: ClubesSyncStatus): void {
+  lastClubsSyncStatus = status;
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(CLUBS_SYNC_META_KEY, JSON.stringify(status));
+    }
+  } catch {
+    // ignore
+  }
+}
+
+function getStoredClubsSyncMeta(): ClubesSyncStatus | null {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const raw = localStorage.getItem(CLUBS_SYNC_META_KEY);
+      if (raw) return JSON.parse(raw);
+    }
+  } catch {
+    // ignore
+  }
+  return null;
+}
+
+function getLocalCachedClubs(): Club[] {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      const raw = localStorage.getItem(LOCAL_CLUBS_KEY);
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        if (Array.isArray(parsed) && parsed.length > 0) {
+          return parsed;
+        }
+      }
+    }
+  } catch {
+    // ignore
+  }
+  return [];
+}
+
+function saveLocalCachedClubs(clubs: Club[]): void {
+  try {
+    if (typeof localStorage !== 'undefined') {
+      localStorage.setItem(LOCAL_CLUBS_KEY, JSON.stringify(clubs));
+    }
+  } catch (e) {
+    console.warn('⚠️ [clubesService] Falha ao salvar cache de clubes:', e);
+  }
+}
+
 function ensureClubPreparation(club: Club): Club {
   if (club.id === 'club-qowYWnG0EfUqrr1a5cHlu4UYmNB3') {
     return {
@@ -45,9 +123,19 @@ function ensureClubPreparation(club: Club): Club {
 }
 
 export const clubesService = {
-  async getAll(): Promise<Club[]> {
+  /**
+   * Retorna o status de sincronização e contingência da coleção de clubes.
+   */
+  getSyncStatus(): ClubesSyncStatus {
+    return { ...lastClubsSyncStatus };
+  },
+
+  async getAll(forceRefresh = false): Promise<Club[]> {
     const db = getFirestoreDb() || firestoreDb;
     let resultClubs: Club[] = [];
+    let firestoreSuccess = false;
+    let quotaErrorDetected = false;
+    let caughtError: any = null;
 
     // Busca lista atual de managers para validação de vínculos
     const allManagers = await managersService.getAllManagers().catch(() => []);
@@ -57,9 +145,8 @@ export const clubesService = {
         const colRef = collection(db, 'clubes');
         const snap = await getDocs(colRef);
         if (!snap.empty) {
-          const firestoreClubs = snap.docs.map((d) => {
+          const firestoreClubs: Club[] = snap.docs.map((d) => {
             const data = d.data();
-            // Mantém d.id (ID real do documento no Firestore, ex: club-<uid>) como identificador principal
             const clubId = d.id;
             return ensureClubPreparation({
               ...data,
@@ -68,43 +155,138 @@ export const clubesService = {
             } as Club);
           });
 
-          // Filtra os clubes preservados e deduplica por ID / nome
-          const canonicalClubs: Club[] = [];
+          // NUNCA exclui clubes criados posteriormente por managers reais!
+          // Exclui apenas clubes teste explicitamente fictícios (como club-real-madrid ou club-6)
+          const validClubs: Club[] = [];
           firestoreClubs.forEach((c) => {
-            if (isPreservedManagerClub(c, allManagers)) {
-              if (
-                !canonicalClubs.some(
-                  (existing) =>
-                    existing.id === c.id ||
-                    (existing.name && c.name && normalizeClubComparisonKey(existing.name) === normalizeClubComparisonKey(c.name))
-                )
-              ) {
-                canonicalClubs.push(c);
-              }
+            if (c.id === 'club-real-madrid' || c.id === 'club-6' || (c as any).universeType === 'TEST_FICTITIOUS') {
+              return;
+            }
+            if (
+              !validClubs.some(
+                (existing) =>
+                  existing.id === c.id ||
+                  (existing.name && c.name && normalizeClubComparisonKey(existing.name) === normalizeClubComparisonKey(c.name))
+              )
+            ) {
+              validClubs.push(c);
             }
           });
 
-          // Sincroniza cache local dataStore com os clubes preservados do Firestore
-          canonicalClubs.forEach((c) => {
+          // Garante que os 6 clubes oficiais originais estejam sempre presentes na lista consolidada
+          const canonicalDataStoreClubs = dataStore.getClubs();
+          canonicalDataStoreClubs.forEach((c) => {
+            if (
+              !validClubs.some(
+                (existing) =>
+                  existing.id === c.id ||
+                  (existing.name && c.name && normalizeClubComparisonKey(existing.name) === normalizeClubComparisonKey(c.name))
+              )
+            ) {
+              validClubs.push(c);
+            }
+          });
+
+          // Sincroniza cache local dataStore com os clubes do Firestore
+          validClubs.forEach((c) => {
             try {
+              const initKey = `2026-2027_${c.id}_CAIXA_INICIAL`;
+              const hasInit = dataStore.getFinances().some((f) => f.id === initKey || f.operationId === initKey);
+              if (hasInit) {
+                c.balance = 600000000;
+                c.transferBudget = 600000000;
+              }
               dataStore.saveClub(c);
             } catch {
               // ignore
             }
           });
 
-          resultClubs = canonicalClubs;
+          // Atualiza também os saldos em validClubs
+          validClubs.forEach((c) => {
+            const initKey = `2026-2027_${c.id}_CAIXA_INICIAL`;
+            if (dataStore.getFinances().some((f) => f.id === initKey || f.operationId === initKey)) {
+              c.balance = 600000000;
+              c.transferBudget = 600000000;
+            }
+          });
+
+          // Persiste no cache local persistente para garantir disponibilidade mesmo sob cota do Firestore
+          saveLocalCachedClubs(validClubs);
+
+          resultClubs = validClubs;
+          firestoreSuccess = true;
+
+          const now = new Date().toISOString();
+          saveClubsSyncMeta({
+            source: 'firestore',
+            isQuotaExceeded: false,
+            lastSyncTime: now,
+            error: null,
+            totalLoaded: validClubs.length,
+          });
+          console.info(`✅ [clubesService] Sucesso na leitura do Firestore: ${snap.docs.length} clubes lidos (${validClubs.length} consolidados).`);
+        } else {
+          firestoreSuccess = true;
         }
-      } catch (err) {
-        console.warn('Falha na consulta Firestore para clubes. Usando fallback.', err);
+      } catch (err: any) {
+        caughtError = err;
+        quotaErrorDetected = isFirestoreQuotaError(err);
+        if (quotaErrorDetected) {
+          console.warn('⚠️ [clubesService] Falha por COTA no Firestore (resource-exhausted). Preservando clubes do cache local:', err);
+        } else {
+          console.warn('⚠️ [clubesService] Falha na consulta Firestore para clubes. Preservando cache local:', err);
+        }
       }
     }
 
-    if (resultClubs.length === 0) {
-      resultClubs = dataStore
-        .getClubs()
-        .filter((c) => isPreservedManagerClub(c, allManagers))
-        .map(ensureClubPreparation);
+    if (!firestoreSuccess) {
+      // Quando o Firestore falhar (por cota ou conectividade):
+      // 1. Tenta recuperar do cache local persistente (fmu_clubes_cache)
+      const cachedClubs = getLocalCachedClubs();
+
+      // 2. Mescla com os clubes atualmente em dataStore.getClubs()
+      const dataStoreClubs = dataStore.getClubs();
+      const mergedMap = new Map<string, Club>();
+
+      // Carrega dataStoreClubs
+      dataStoreClubs.forEach((c) => {
+        if (c.id !== 'club-real-madrid' && c.id !== 'club-6') {
+          mergedMap.set(c.id, ensureClubPreparation(c));
+        }
+      });
+
+      // Sobrepõe com os clubes em cache (que contêm os clubes reais persistidos antes da cota)
+      cachedClubs.forEach((c) => {
+        if (c.id !== 'club-real-madrid' && c.id !== 'club-6') {
+          mergedMap.set(c.id, ensureClubPreparation(c));
+        }
+      });
+
+      // 3. Verifica também os managers conhecidos para resgatar clubes pelo vínculo managerId
+      allManagers.forEach((m) => {
+        if (m.clubId && !mergedMap.has(m.clubId)) {
+          const club = dataStore.getClubById(m.clubId);
+          if (club) {
+            mergedMap.set(club.id, ensureClubPreparation(club));
+          }
+        }
+      });
+
+      resultClubs = Array.from(mergedMap.values());
+
+      const meta = getStoredClubsSyncMeta();
+      const isKnownCache = Boolean(meta?.lastSyncTime) || resultClubs.length > 6;
+
+      saveClubsSyncMeta({
+        source: isKnownCache ? 'cache' : 'fallback',
+        isQuotaExceeded: quotaErrorDetected,
+        lastSyncTime: meta?.lastSyncTime || lastClubsSyncStatus.lastSyncTime || null,
+        error: quotaErrorDetected
+          ? 'Cota de leitura do Firestore excedida (resource-exhausted). Clubes preservados do cache mais recente.'
+          : caughtError?.message || 'Falha temporária ao ler clubes do Firestore.',
+        totalLoaded: resultClubs.length,
+      });
     }
 
     return resultClubs;
@@ -500,6 +682,7 @@ export const clubesService = {
       CANONICAL_CLUB_IDS.has(resolveRealClubId(id)) ||
       officialIds.includes(id) ||
       isPreservedManagerClub(club) ||
+      hasManager ||
       officialCodes.includes(code.toUpperCase());
     const universeType = isOfficial ? 'OFFICIAL' : 'TEST_FICTITIOUS';
 

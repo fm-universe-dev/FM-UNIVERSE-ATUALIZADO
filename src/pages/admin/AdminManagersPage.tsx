@@ -19,7 +19,7 @@ import {
   Users,
   Key,
 } from 'lucide-react';
-import { managersService, RODRIGO_MARIANO_UID } from '../../services/managersService';
+import { managersService, RODRIGO_MARIANO_UID, ManagersSyncStatus } from '../../services/managersService';
 import { adminResetManagerPassword } from '../../services/authService';
 import { dataStore } from '../../services/dataStore';
 import { ManagerProfile, Club } from '../../types';
@@ -32,6 +32,7 @@ export const AdminManagersPage: React.FC = () => {
   const [loading, setLoading] = useState(true);
   const [search, setSearch] = useState('');
   const [statusFilter, setStatusFilter] = useState<'ALL' | 'ACTIVE' | 'INACTIVE'>('ALL');
+  const [syncStatus, setSyncStatus] = useState<ManagersSyncStatus>(() => managersService.getSyncStatus());
 
   // Modals state
   const [isCreateOpen, setIsCreateOpen] = useState(false);
@@ -89,15 +90,28 @@ export const AdminManagersPage: React.FC = () => {
     }
   };
 
-  // Carrega lista de managers e clubes
-  const loadData = async () => {
+  // Carrega lista de managers e clubes com preservação estrita contra falhas de cota
+  const loadData = async (forceRetry = false) => {
     try {
       setLoading(true);
       const [mgrList, clubList] = await Promise.all([
-        managersService.getAllManagers(),
+        managersService.getAllManagers(forceRetry),
         Promise.resolve(dataStore.getClubs()),
       ]);
-      setManagers(mgrList);
+
+      const currentStatus = managersService.getSyncStatus();
+      setSyncStatus(currentStatus);
+
+      // Regra de integridade: se a consulta ao Firestore falhar por cota ou retornar apenas fallback,
+      // NUNCA rebaixa nem descarta os managers reais que já estavam em tela.
+      setManagers((prev) => {
+        if (currentStatus.isQuotaExceeded && prev.length > mgrList.length) {
+          console.warn(`⚠️ [AdminManagersPage] Preservando ${prev.length} managers em tela devido a erro de cota no Firestore.`);
+          return prev;
+        }
+        return mgrList;
+      });
+
       setClubs(clubList);
     } catch (err: any) {
       console.error('Erro ao carregar managers:', err);
@@ -298,6 +312,22 @@ export const AdminManagersPage: React.FC = () => {
     }
   };
 
+  const formatDateTime = (dateStr?: string | null) => {
+    if (!dateStr) return '-';
+    try {
+      const d = new Date(dateStr);
+      return d.toLocaleString('pt-BR', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    } catch {
+      return dateStr;
+    }
+  };
+
   return (
     <div className="space-y-6 pb-12">
       {/* Toast Notification */}
@@ -328,26 +358,90 @@ export const AdminManagersPage: React.FC = () => {
           <p className="text-sm text-neutral-400">
             Controle de participantes da liga, vinculação oficial de clubes e garantia de integridade competitiva.
           </p>
+          <div className="flex items-center gap-2 mt-2">
+            {syncStatus.source === 'firestore' ? (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-950/80 border border-emerald-500/30 text-emerald-400">
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                <span>Firestore Conectado {syncStatus.lastSyncTime ? `(${formatDateTime(syncStatus.lastSyncTime)})` : ''}</span>
+              </span>
+            ) : syncStatus.isQuotaExceeded ? (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-950/80 border border-amber-500/30 text-amber-400">
+                <AlertTriangle className="w-3.5 h-3.5" />
+                <span>Dados Preservados em Cache {syncStatus.lastSyncTime ? `(${formatDateTime(syncStatus.lastSyncTime)})` : ''}</span>
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-neutral-900 border border-neutral-700 text-neutral-400">
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Lista Local de Contingência</span>
+              </span>
+            )}
+          </div>
         </div>
 
         <div className="flex items-center gap-3">
           <button
-            onClick={loadData}
-            title="Recarregar lista"
-            className="p-2.5 rounded-lg border border-[#333] hover:border-neutral-500 text-neutral-400 hover:text-white bg-[#141414] transition-colors"
+            onClick={() => loadData(true)}
+            title="Recarregar e sincronizar com Firestore"
+            className="flex items-center gap-2 px-3 py-2 rounded-lg border border-[#333] hover:border-neutral-500 text-neutral-300 hover:text-white bg-[#141414] transition-colors text-xs font-medium cursor-pointer"
           >
-            <RefreshCw className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} />
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+            <span>Sincronizar</span>
           </button>
 
           <button
             onClick={openCreateModal}
-            className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-sm font-semibold rounded-lg shadow-md transition-all"
+            className="flex items-center gap-2 px-4 py-2.5 bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white text-sm font-semibold rounded-lg shadow-md transition-all cursor-pointer"
           >
             <Plus className="w-4 h-4" />
             <span>Cadastrar Manager</span>
           </button>
         </div>
       </div>
+
+      {/* Banner Informativo de Cota Excedida / Preservação de Cache */}
+      {syncStatus.isQuotaExceeded && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 bg-amber-950/40 border border-amber-500/40 rounded-xl text-amber-200">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+            <div>
+              <div className="text-sm font-semibold text-amber-300">
+                Aviso de Cota do Firestore — Dados Preservados do Cache
+              </div>
+              <p className="text-xs text-amber-200/80 mt-0.5">
+                A leitura em tempo real do Firestore atingiu a cota temporária da nuvem. O sistema preservou a última lista válida conhecida ({syncStatus.lastSyncTime ? `sincronizada em ${formatDateTime(syncStatus.lastSyncTime)}` : 'em cache local'}) com todos os managers existentes, sem substituir silenciosamente os dados por uma lista canônica fixa.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => loadData(true)}
+            disabled={loading}
+            className="flex items-center justify-center gap-2 px-3.5 py-1.5 bg-amber-600/30 hover:bg-amber-600/50 border border-amber-500/40 rounded-lg text-xs font-semibold text-amber-200 transition-all shrink-0 cursor-pointer"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+            <span>Tentar Novamente</span>
+          </button>
+        </div>
+      )}
+
+      {/* Banner Informativo de Fallback de Emergência */}
+      {syncStatus.source === 'fallback' && !syncStatus.isQuotaExceeded && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 bg-neutral-900/90 border border-neutral-700/60 rounded-xl text-neutral-300">
+          <div className="flex items-center gap-2.5 text-xs">
+            <AlertTriangle className="w-4 h-4 text-neutral-400 shrink-0" />
+            <span>
+              Lista local de contingência ativa. Clique em Sincronizar para buscar todos os managers persistidos no Firestore.
+            </span>
+          </div>
+          <button
+            onClick={() => loadData(true)}
+            disabled={loading}
+            className="flex items-center gap-1.5 px-3 py-1 bg-neutral-800 hover:bg-neutral-700 border border-neutral-600 rounded text-xs font-medium text-white transition-all shrink-0 cursor-pointer"
+          >
+            <RefreshCw className={`w-3 h-3 ${loading ? 'animate-spin' : ''}`} />
+            <span>Sincronizar Agora</span>
+          </button>
+        </div>
+      )}
 
       {/* Stat Cards */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-4">

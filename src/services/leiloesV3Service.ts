@@ -31,7 +31,9 @@ import {
   DarLanceParams,
   CriarLeiloesEmMassaParams,
   CriarLeiloesEmMassaResult,
+  AtualizarPeriodoEmMassaResult,
 } from '../types/leiloesV3';
+export type { AtualizarPeriodoEmMassaResult } from '../types/leiloesV3';
 import { Transfer, FinanceRecord, News, Player } from '../types';
 import { dataStore } from './dataStore';
 import { clubesService } from './clubesService';
@@ -998,6 +1000,24 @@ export const leiloesV3Service = {
         }
       }
 
+      // 1. Validação de Liquidez: O CAIXA REAL (club.balance) é a ÚNICA fonte de verdade
+      const targetClubDocId = params.clubId.trim();
+      const localClub = dataStore.getClubById(targetClubDocId);
+      const caixaRealAtual = Number(
+        localClub && typeof localClub.balance === 'number'
+          ? localClub.balance
+          : params.clubBalance !== undefined
+          ? params.clubBalance
+          : 0
+      );
+
+      if (valorLance > caixaRealAtual) {
+        return {
+          success: false,
+          error: `Caixa Real insuficiente! Saldo atual do clube: R$ ${caixaRealAtual.toLocaleString('pt-BR')}, insuficiente para o lance de R$ ${valorLance.toLocaleString('pt-BR')}.`,
+        };
+      }
+
       if (params.clubTransferBudget && params.clubTransferBudget > 0) {
         if (valorLance > params.clubTransferBudget) {
           return {
@@ -1007,7 +1027,6 @@ export const leiloesV3Service = {
         }
       }
 
-      const targetClubDocId = params.clubId.trim();
       const nowIso = new Date().toISOString();
       const generatedLanceId = `lance-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
 
@@ -1050,12 +1069,13 @@ export const leiloesV3Service = {
             }
 
             const txClubSnap = await tx.get(clubDocRef);
-            let transferBudget = params.clubTransferBudget || 0;
+            let clubBalance = caixaRealAtual;
             let currentReserved = params.clubReservedBudget || 0;
 
             if (txClubSnap.exists()) {
               const clubData = txClubSnap.data();
-              transferBudget = Number(clubData.transferBudget ?? clubData.balance ?? transferBudget);
+              // Regra Oficial FM Universe: O CAIXA REAL (club.balance) é a única fonte de verdade
+              clubBalance = Number(clubData.balance ?? clubBalance);
               currentReserved = Number(clubData.reservedTransferBudget ?? currentReserved);
             }
 
@@ -1065,11 +1085,19 @@ export const leiloesV3Service = {
               existingReservationForThisAuction = Number(txBuyerResSnap.data().amount) || 0;
             }
 
-            const newReservedBudget = (currentReserved - existingReservationForThisAuction) + valorLance;
-            if (transferBudget > 0 && newReservedBudget > transferBudget) {
-              const disponivelAtual = Math.max(0, transferBudget - currentReserved + existingReservationForThisAuction);
+            // Validação estrita: O lance NÃO pode exceder o Caixa Real
+            const caixaRealDisponivel = clubBalance;
+            if (valorLance > caixaRealDisponivel) {
               throw new Error(
-                `Orçamento insuficiente! Disponível para este lance: R$ ${disponivelAtual.toLocaleString('pt-BR')}, valor do lance: R$ ${valorLance.toLocaleString('pt-BR')}.`
+                `Caixa Real insuficiente! Saldo atual do clube: R$ ${caixaRealDisponivel.toLocaleString('pt-BR')}, valor do lance: R$ ${valorLance.toLocaleString('pt-BR')}.`
+              );
+            }
+
+            const newReservedBudget = (currentReserved - existingReservationForThisAuction) + valorLance;
+            if (clubBalance > 0 && newReservedBudget > clubBalance) {
+              const disponivelAtual = Math.max(0, clubBalance - currentReserved + existingReservationForThisAuction);
+              throw new Error(
+                `Caixa Real insuficiente considerando lances já reservados! Disponível: R$ ${disponivelAtual.toLocaleString('pt-BR')}, valor do lance: R$ ${valorLance.toLocaleString('pt-BR')}.`
               );
             }
 
@@ -1367,21 +1395,43 @@ export const leiloesV3Service = {
         return { success: false, error: 'Atleta não localizado.' };
       }
 
+      // =======================================================================
+      // CORREÇÃO 2 — TRAVA DEFINITIVA DE CAIXA REAL ANTES DE FINALIZAR
+      // =======================================================================
+      // 1. Buscar o saldo REAL mais atual do clube vencedor no momento da finalização
+      let freshClub = await clubesService.getById(winnerClub.id);
+      if (!freshClub) {
+        freshClub = dataStore.getClubById(winnerClub.id) || winnerClub;
+      }
+      const currentBalance = Number(freshClub.balance ?? 0);
+
+      // 2. Obter o valor final vencedor: winningFee
+
+      // 3. Comparar: currentBalance < winningFee
+      if (currentBalance < winningFee) {
+        this._settlingIds.delete(leilaoId);
+        console.warn(
+          `⚠️ [Leiloes] Finalização bloqueada: Caixa Real do clube ${freshClub.name} (R$ ${currentBalance.toLocaleString('pt-BR')}) é insuficiente para pagar o valor vencedor de R$ ${winningFee.toLocaleString('pt-BR')}.`
+        );
+        return {
+          success: false,
+          error: `Saldo insuficiente no Caixa Real do clube vencedor (${freshClub.name})! Saldo em caixa: R$ ${currentBalance.toLocaleString('pt-BR')}, valor da proposta vencedora: R$ ${winningFee.toLocaleString('pt-BR')}.`,
+        };
+      }
+
+      winnerClub = freshClub;
       const nowIso = new Date().toISOString();
       const todayDate = nowIso.split('T')[0];
 
       // 5. Atualização Financeira: Converter a reserva em gasto efetivo definitivo
-      // Saldo e orçamento são debitados em winningFee (R$ 1.300.000).
-      // A reserva financeira é consumida/zerada na mesma proporção (R$ 1.300.000).
-      // Dessa forma, o orçamento disponível (transferBudget - reservedTransferBudget)
-      // é preservado perfeitamente sem dupla dedução.
-      const currentBudget = Number(winnerClub.transferBudget ?? winnerClub.balance ?? 45000000);
-      const currentBalance = Number(winnerClub.balance ?? 45000000);
+      // Saldo e orçamento são debitados em winningFee.
+      // A reserva financeira é consumida/zerada na mesma proporção.
+      const currentBudget = Number(winnerClub.transferBudget ?? winnerClub.balance ?? currentBalance);
       const currentReserved = Number(winnerClub.reservedTransferBudget ?? 0);
 
       const newReserved = Math.max(0, currentReserved - winningFee);
       const newBudget = Math.max(0, currentBudget - winningFee);
-      const newBalance = Math.max(0, currentBalance - winningFee);
+      const newBalance = currentBalance - winningFee;
 
       winnerClub.transferBudget = newBudget;
       winnerClub.balance = newBalance;
@@ -1458,22 +1508,27 @@ export const leiloesV3Service = {
       await transferenciasService.add(transferRecord);
 
       // 9. Registrar Notícia e Lançamento Financeiro no Caixa Real e Livro Caixa
+      const transferFinanceKey = `2026-2027_${winnerClub.id}_TRANSFERENCIA_${leilaoId}`;
       dataStore.addFinanceRecord({
-        id: `fin-auction-${leilaoId}`,
+        id: transferFinanceKey,
+        operationId: transferFinanceKey,
         clubId: winnerClub.id,
         seasonId: '2026/2027',
         season: '2026/2027',
         date: todayDate,
         type: 'EXPENSE',
         inOut: 'OUT',
-        operationType: 'TRANSFER_PURCHASE',
-        category: 'TRANSFER_FEE',
+        operationType: 'TRANSFERENCIA_COMPRA',
+        category: 'TRANSFERENCIA_COMPRA',
         transactionType: 'Contratação em leilão',
-        description: `Contratação em leilão de ${player.name}`,
+        description: `Contratação de ${player.name} (Leilão #${leilaoId})`,
         amount: winningFee,
         balanceBefore: currentBalance,
         balanceAfter: newBalance,
         referenceId: leilaoId,
+        auctionId: leilaoId,
+        playerId: player.id,
+        playerName: player.name,
         origin: 'LEILAO_V3',
       });
 
@@ -1564,6 +1619,13 @@ export const leiloesV3Service = {
   },
 
   /**
+   * Alias oficial para liquidarLeilao (Finalização de leilão com validação estrita de Caixa Real)
+   */
+  async finalizarLeilao(leilaoId: string) {
+    return this.liquidarLeilao(leilaoId);
+  },
+
+  /**
    * ATUALIZAÇÃO DE STATUS DO LEILÃO (ADMIN)
    */
   async atualizarStatus(
@@ -1613,6 +1675,110 @@ export const leiloesV3Service = {
       const msg = err instanceof Error ? err.message : String(err);
       return { success: false, error: msg };
     }
+  },
+
+  /**
+   * ATUALIZAÇÃO EM MASSA DO PERÍODO DOS LEILÕES ABERTOS (ADMIN)
+   * Atualiza EXCLUSIVAMENTE os campos startTime e endTime dos leilões cujo status seja 'ABERTO'.
+   * Preserva integralmente todos os demais campos (id, jogador, valores, lances, vínculos, saldo).
+   * Utiliza writeBatch em lotes de até 400 documentos no Firestore.
+   * Idempotente: execuções repetidas não criam nem duplicam nenhum documento.
+   */
+  async atualizarPeriodoLeiloesAbertos(
+    novoStartTime: string = '2026-10-02T00:00:00',
+    novoEndTime: string = '2026-10-10T23:59:59'
+  ): Promise<AtualizarPeriodoEmMassaResult> {
+    const erros: string[] = [];
+    const db = this.getDb();
+    const nowIso = new Date().toISOString();
+
+    try {
+      await ensureAuthReady();
+    } catch (authErr) {
+      console.warn('⚠️ [Leiloes] Verificação de auth:', authErr);
+    }
+
+    // 1. Obtém a lista completa dos leilões
+    let todosLeiloes: { id: string; status?: string }[] = [];
+    if (db) {
+      try {
+        const colRef = collection(db, 'leiloes');
+        const snap = await getDocs(colRef);
+        todosLeiloes = snap.docs.map((d) => ({
+          id: d.id,
+          status: (d.data().status as string) || 'ABERTO',
+        }));
+      } catch (err) {
+        checkAndHandleQuotaError(err);
+        erros.push(
+          `Aviso na leitura do Firestore: ${err instanceof Error ? err.message : String(err)}`
+        );
+      }
+    }
+
+    // Se o Firestore não retornou documentos (ou modo local), lê do cache local
+    if (todosLeiloes.length === 0) {
+      todosLeiloes = getLocalLeiloes().map((l) => ({ id: l.id, status: l.status }));
+    }
+
+    const totalEncontrados = todosLeiloes.length;
+    const leiloesAbertos = todosLeiloes.filter((l) => {
+      const st = String(l.status || 'ABERTO').trim().toUpperCase();
+      return st === 'ABERTO';
+    });
+    const totalIgnorados = totalEncontrados - leiloesAbertos.length;
+
+    // 2. Executa atualização em lote no Firestore
+    let totalAtualizados = 0;
+    if (db && leiloesAbertos.length > 0) {
+      const BATCH_SIZE = 400;
+      for (let i = 0; i < leiloesAbertos.length; i += BATCH_SIZE) {
+        const chunk = leiloesAbertos.slice(i, i + BATCH_SIZE);
+        const batch = writeBatch(db);
+        for (const item of chunk) {
+          const docRef = doc(db, 'leiloes', item.id);
+          batch.update(docRef, {
+            startTime: novoStartTime,
+            endTime: novoEndTime,
+            updatedAt: nowIso,
+          });
+        }
+        try {
+          await batch.commit();
+          totalAtualizados += chunk.length;
+        } catch (batchErr) {
+          checkAndHandleQuotaError(batchErr);
+          const msg = `Falha ao persistir lote ${Math.floor(i / BATCH_SIZE) + 1} no Firestore: ${batchErr instanceof Error ? batchErr.message : String(batchErr)}`;
+          console.error('❌ [Leiloes]', msg);
+          erros.push(msg);
+        }
+      }
+    } else {
+      totalAtualizados = leiloesAbertos.length;
+    }
+
+    // 3. Atualiza rigorosamente o cache local preservando todos os demais atributos intactos
+    const locais = getLocalLeiloes();
+    const atualizadosLocais = locais.map((l) => {
+      const st = String(l.status || 'ABERTO').trim().toUpperCase();
+      if (st === 'ABERTO') {
+        return {
+          ...l,
+          startTime: novoStartTime,
+          endTime: novoEndTime,
+          updatedAt: nowIso,
+        };
+      }
+      return l;
+    });
+    saveLocalLeiloes(atualizadosLocais);
+
+    return {
+      totalEncontrados,
+      totalAtualizados,
+      totalIgnorados,
+      erros,
+    };
   },
 
   /**

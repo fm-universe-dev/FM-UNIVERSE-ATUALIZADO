@@ -218,6 +218,7 @@ export const ManagerLeiloesV3Page: React.FC = () => {
       minIncrement: Number(leilaoAtivo.minIncrement) || 0,
       highestBid: highestBidInModal,
       prevLeaderClubId: prevLeaderClubIdInModal,
+      clubBalance: Number(managedClub?.balance ?? 0),
       clubTransferBudget: Number(managedClub?.transferBudget ?? managedClub?.balance ?? 0),
       clubReservedBudget: Number(managedClub?.reservedTransferBudget ?? 0),
     });

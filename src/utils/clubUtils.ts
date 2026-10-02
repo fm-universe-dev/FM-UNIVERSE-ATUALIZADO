@@ -278,6 +278,16 @@ export function isPreservedManagerClub(
     return true;
   }
 
+  // Preservação de qualquer clube que possua um Manager vinculado (incluindo cadastrados após a limpeza)
+  if (
+    club.managerId &&
+    club.managerId.trim() !== '' &&
+    club.managerId !== 'sem-manager' &&
+    club.managerId !== 'cpu'
+  ) {
+    return true;
+  }
+
   // 3. Identificação pelos vínculos atuais com os Managers reais
   if (managersList && managersList.length > 0) {
     const isLinkedToManager = managersList.some((m) => {

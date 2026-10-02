@@ -15,8 +15,13 @@ import {
   Square,
   Filter,
   Layers,
+  Calendar,
 } from 'lucide-react';
-import { leiloesV3Service, cleanSearchText } from '../../services/leiloesV3Service';
+import {
+  leiloesV3Service,
+  cleanSearchText,
+  AtualizarPeriodoEmMassaResult,
+} from '../../services/leiloesV3Service';
 import { jogadoresService } from '../../services/jogadoresService';
 import { Leilao, Lance, LeilaoStatus, CriarLeiloesEmMassaResult } from '../../types/leiloesV3';
 import { Player } from '../../types';
@@ -108,6 +113,13 @@ export const AdminLeiloesV3Page: React.FC = () => {
   // Confirmação e Resumo do Lote
   const [massConfirmModal, setMassConfirmModal] = useState<boolean>(false);
   const [massResultDetails, setMassResultDetails] = useState<CriarLeiloesEmMassaResult | null>(null);
+
+  // Estados do Modal de Atualização em Massa do Período dos Leilões Abertos
+  const [isUpdatePeriodModalOpen, setIsUpdatePeriodModalOpen] = useState<boolean>(false);
+  const [updatePeriodStartTime, setUpdatePeriodStartTime] = useState<string>('2026-10-02T00:00:00');
+  const [updatePeriodEndTime, setUpdatePeriodEndTime] = useState<string>('2026-10-10T23:59:59');
+  const [isUpdatingPeriod, setIsUpdatingPeriod] = useState<boolean>(false);
+  const [updatePeriodResult, setUpdatePeriodResult] = useState<AtualizarPeriodoEmMassaResult | null>(null);
 
   // Identifica jogadores que já possuem leilão ativo (ABERTO ou AGENDADO)
   const activeAuctionPlayerIds = useMemo(() => {
@@ -470,6 +482,36 @@ export const AdminLeiloesV3Page: React.FC = () => {
     }
   };
 
+  const handleAtualizarPeriodo = async () => {
+    setIsUpdatingPeriod(true);
+    try {
+      const res = await leiloesV3Service.atualizarPeriodoLeiloesAbertos(
+        updatePeriodStartTime,
+        updatePeriodEndTime
+      );
+      setUpdatePeriodResult(res);
+      if (res.erros.length === 0) {
+        setFeedback({
+          type: 'success',
+          message: `Período atualizado com sucesso! ${res.totalAtualizados} leilão(ões) aberto(s) atualizado(s) no sistema oficial.`,
+        });
+      } else {
+        setFeedback({
+          type: 'error',
+          message: `${res.totalAtualizados} leilão(ões) atualizado(s) com avisos/erros. Verifique o relatório no modal.`,
+        });
+      }
+    } catch (err) {
+      console.error('Erro ao atualizar período dos leilões:', err);
+      setFeedback({
+        type: 'error',
+        message: `Falha ao atualizar período: ${err instanceof Error ? err.message : String(err)}`,
+      });
+    } finally {
+      setIsUpdatingPeriod(false);
+    }
+  };
+
   const jogadoresFiltrados = jogadores.filter((p) => {
     if (!filtroJogador) return true;
     const q = filtroJogador.toLowerCase();
@@ -499,6 +541,18 @@ export const AdminLeiloesV3Page: React.FC = () => {
         </div>
 
         <div className="flex flex-wrap items-center gap-3 w-full sm:w-auto">
+          <button
+            id="btn-atualizar-periodo-leiloes-abertos"
+            onClick={() => {
+              setUpdatePeriodResult(null);
+              setIsUpdatePeriodModalOpen(true);
+            }}
+            className="flex items-center gap-2 px-4 py-2.5 bg-blue-600/20 hover:bg-blue-600/30 border border-blue-500/40 text-blue-300 font-semibold rounded-xl transition-all shadow-lg hover:shadow-blue-500/10 active:scale-95 cursor-pointer text-sm"
+          >
+            <Calendar className="w-4 h-4 text-blue-400" />
+            <span>Atualizar Período dos Leilões Abertos</span>
+          </button>
+
           <button
             id="btn-abrir-criar-leiloes-em-massa"
             onClick={handleOpenMassModal}
@@ -1514,6 +1568,153 @@ export const AdminLeiloesV3Page: React.FC = () => {
                   </>
                 ) : (
                   <span>CRIAR LEILÕES</span>
+                )}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Modal de Atualização em Massa do Período dos Leilões Abertos */}
+      {isUpdatePeriodModalOpen && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm">
+          <div className="bg-slate-900 border border-slate-800 rounded-2xl w-full max-w-xl p-6 text-white shadow-2xl space-y-5">
+            {/* Cabeçalho */}
+            <div className="flex justify-between items-center border-b border-slate-800 pb-4">
+              <h3 className="text-lg font-bold flex items-center gap-2">
+                <Calendar className="w-5 h-5 text-blue-400" />
+                <span>Atualizar Período dos Leilões Abertos</span>
+              </h3>
+              <button
+                type="button"
+                onClick={() => setIsUpdatePeriodModalOpen(false)}
+                className="text-slate-400 hover:text-white transition"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Aviso de Confirmação Obrigatório */}
+            <div className="p-4 bg-amber-950/30 border border-amber-500/40 rounded-xl space-y-2 text-amber-200">
+              <div className="flex items-start gap-2.5">
+                <AlertCircle className="w-5 h-5 text-amber-400 flex-shrink-0 mt-0.5" />
+                <div>
+                  <p className="font-semibold text-sm text-amber-300">Confirmação Operacional</p>
+                  <p className="text-xs text-amber-200/90 leading-relaxed mt-1">
+                    "Isso atualizará apenas startTime e endTime dos leilões ABERTOS. Nenhum jogador, lance, clube ou saldo será alterado."
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Parâmetros do Período */}
+            <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-3">
+              <p className="text-xs font-semibold text-slate-400 uppercase tracking-wider">
+                Definição do Período Oficial (Temporada 2026/2027)
+              </p>
+
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+                <div>
+                  <label className="text-slate-400 block mb-1">Início da Janela (startTime)</label>
+                  <input
+                    type="text"
+                    value={updatePeriodStartTime}
+                    onChange={(e) => setUpdatePeriodStartTime(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white font-mono text-xs focus:outline-none focus:border-blue-500"
+                  />
+                  <span className="text-[10px] text-slate-500 mt-0.5 block">02/10/2026 00:00:00</span>
+                </div>
+
+                <div>
+                  <label className="text-slate-400 block mb-1">Fim da Janela (endTime)</label>
+                  <input
+                    type="text"
+                    value={updatePeriodEndTime}
+                    onChange={(e) => setUpdatePeriodEndTime(e.target.value)}
+                    className="w-full bg-slate-900 border border-slate-700 rounded-lg px-3 py-2 text-white font-mono text-xs focus:outline-none focus:border-blue-500"
+                  />
+                  <span className="text-[10px] text-slate-500 mt-0.5 block">10/10/2026 23:59:59</span>
+                </div>
+              </div>
+
+              <div className="pt-2 border-t border-slate-800/80 flex items-center justify-between text-xs text-slate-400">
+                <span>Leilões atualmente cadastrados na tela:</span>
+                <span className="font-mono text-white font-bold">{leiloes.length}</span>
+              </div>
+            </div>
+
+            {/* Relatório de Execução (quando executado) */}
+            {updatePeriodResult && (
+              <div className="p-4 bg-slate-950 border border-blue-500/30 rounded-xl space-y-2">
+                <p className="text-xs font-semibold text-blue-400 uppercase tracking-wider flex items-center gap-1.5">
+                  <CheckCircle2 className="w-4 h-4 text-emerald-400" />
+                  Resultado da Atualização em Massa
+                </p>
+                <div className="grid grid-cols-3 gap-2 text-center pt-1">
+                  <div className="bg-slate-900 p-2.5 rounded-lg border border-slate-800">
+                    <span className="text-[11px] text-slate-400 block">Encontrados</span>
+                    <span className="text-base font-bold font-mono text-white">
+                      {updatePeriodResult.totalEncontrados}
+                    </span>
+                  </div>
+                  <div className="bg-slate-900 p-2.5 rounded-lg border border-emerald-900/40">
+                    <span className="text-[11px] text-emerald-400 block">Atualizados</span>
+                    <span className="text-base font-bold font-mono text-emerald-400">
+                      {updatePeriodResult.totalAtualizados}
+                    </span>
+                  </div>
+                  <div className="bg-slate-900 p-2.5 rounded-lg border border-slate-800">
+                    <span className="text-[11px] text-slate-400 block">Ignorados</span>
+                    <span className="text-base font-bold font-mono text-slate-300">
+                      {updatePeriodResult.totalIgnorados}
+                    </span>
+                  </div>
+                </div>
+
+                {updatePeriodResult.erros.length > 0 ? (
+                  <div className="p-2 bg-red-950/40 border border-red-500/30 rounded text-xs text-red-300 space-y-1 mt-2">
+                    <p className="font-semibold">Erros / Avisos:</p>
+                    {updatePeriodResult.erros.map((err, idx) => (
+                      <p key={idx} className="font-mono text-[11px]">{err}</p>
+                    ))}
+                  </div>
+                ) : (
+                  <p className="text-[11px] text-emerald-400 mt-1 flex items-center gap-1">
+                    <CheckCircle2 className="w-3.5 h-3.5" />
+                    Nenhum erro registrado. Atualização concluída com sucesso.
+                  </p>
+                )}
+              </div>
+            )}
+
+            {/* Ações */}
+            <div className="flex justify-end gap-3 pt-2 border-t border-slate-800">
+              <button
+                type="button"
+                id="btn-fechar-modal-periodo"
+                disabled={isUpdatingPeriod}
+                onClick={() => setIsUpdatePeriodModalOpen(false)}
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-sm font-medium transition cursor-pointer"
+              >
+                {updatePeriodResult ? 'Concluir' : 'Cancelar'}
+              </button>
+
+              <button
+                type="button"
+                id="btn-confirmar-atualizacao-periodo"
+                disabled={isUpdatingPeriod}
+                onClick={handleAtualizarPeriodo}
+                className="px-6 py-2 bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold rounded-xl text-sm shadow-lg shadow-blue-600/20 transition active:scale-95 flex items-center gap-2 cursor-pointer"
+              >
+                {isUpdatingPeriod ? (
+                  <>
+                    <RefreshCw className="w-4 h-4 animate-spin text-white" />
+                    <span>Atualizando em lote...</span>
+                  </>
+                ) : updatePeriodResult ? (
+                  <span>Executar Novamente</span>
+                ) : (
+                  <span>Confirmar e Atualizar Período</span>
                 )}
               </button>
             </div>

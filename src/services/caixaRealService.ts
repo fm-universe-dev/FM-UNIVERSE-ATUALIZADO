@@ -618,10 +618,13 @@ export const caixaRealService = {
     const records = dataStore.getFinancesByClubId(clubId, seasonYear);
     const club = dataStore.getClubById(clubId);
 
-    // 1. Busca o registro de abertura oficial da temporada (INITIAL_BUDGET)
+    // 1. Busca o registro de abertura oficial da temporada (CAIXA_INICIAL ou INITIAL_BUDGET)
     const initialRecord = records.find(
       (r) =>
-        (r.operationType === 'INITIAL_BUDGET' || r.category === 'ORCAMENTO_INICIAL') &&
+        (r.operationType === 'CAIXA_INICIAL' ||
+          r.operationType === 'INITIAL_BUDGET' ||
+          r.category === 'CAIXA_INICIAL' ||
+          r.category === 'ORCAMENTO_INICIAL') &&
         normalizeSeason(r.seasonId || r.season) === targetSeasonNorm
     );
 
@@ -642,7 +645,9 @@ export const caixaRealService = {
     for (const r of records) {
       if (
         r.id === initialRecord?.id ||
+        r.operationType === 'CAIXA_INICIAL' ||
         r.operationType === 'INITIAL_BUDGET' ||
+        r.category === 'CAIXA_INICIAL' ||
         r.category === 'ORCAMENTO_INICIAL'
       ) {
         continue;

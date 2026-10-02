@@ -699,6 +699,22 @@ export interface ClubFacility {
 }
 
 export type FinancialOperationType =
+  // Regras Oficiais FM Universe
+  | 'CAIXA_INICIAL'
+  | 'TRANSFERENCIA_COMPRA'
+  | 'TRANSFERENCIA_VENDA'
+  | 'RECEITA_TV'
+  | 'RECEITA_INGRESSOS'
+  | 'RECEITA_PATROCINIO'
+  | 'OUTRAS_RECEITAS'
+  | 'SALARIOS_JOGADORES'
+  | 'SALARIOS_COMISSAO'
+  | 'SALARIOS_STAFF'
+  | 'DESPESA_OPERACIONAL'
+  | 'DESPESAS_OPERACIONAIS'
+  | 'OUTRAS_DESPESAS'
+  | 'FECHAMENTO_PERIODO'
+  // Compatibilidade com histórico e serviços legados
   | 'INITIAL_BUDGET'
   | 'TRANSFER_PURCHASE'
   | 'PLAYER_SALE'
@@ -715,6 +731,7 @@ export type FinancialOperationType =
 
 export interface FinanceRecord {
   id?: string;
+  operationId?: string; // ID único e idempotente da operação
   month?: string;
   monthYear?: string; // ex: "Setembro/2026"
   date?: string;
@@ -723,6 +740,10 @@ export interface FinanceRecord {
   transactionType?: 'Compra de jogador' | 'Venda de jogador' | string;
   offerId?: string;
   transferId?: string;
+  auctionId?: string;
+  leilaoId?: string;
+  playerId?: string;
+  playerName?: string;
   referenceId?: string;
   category?: string;
   description?: string;
@@ -731,6 +752,7 @@ export interface FinanceRecord {
   seasonId?: string;
   // Campos de Livro Caixa e Motor de Temporada
   round?: number;
+  periodNumber?: number; // 1, 2, 3... (a cada 4 rodadas)
   season?: string;
   origin?: string;
   inOut?: 'IN' | 'OUT' | 'CREDIT' | 'DEBIT';
@@ -745,6 +767,30 @@ export interface FinanceRecord {
   staffWages?: number;
   maintenance?: number;
   scouting?: number;
+}
+
+export interface FinancialPeriodClosure {
+  id: string; // Ex: `${seasonId}_${clubId}_FECHAMENTO_PERIODO_${periodNumber}`
+  clubId: string;
+  seasonId: string;
+  periodNumber: number; // 1, 2, 3... (a cada 4 rodadas)
+  startRound: number;
+  endRound: number;
+  closedAt: string;
+  sponsorshipRevenue?: number; // Patrocínio oficial do período (+ R$ 8.000.000)
+  totalIncomes?: number;
+  totalSalaries: number;
+  playerSalaries: number;
+  coachingStaffSalaries: number;
+  operationalStaffSalaries: number;
+  operationalExpenses: number; // Despesa operacional (- R$ 3.000.000)
+  otherExpenses: number;
+  totalExpenses: number;
+  netAmount?: number;
+  balanceBefore: number;
+  balanceAfter: number;
+  status: 'COMPLETED' | 'DEFICIT';
+  idempotencyKey: string;
 }
 
 export interface MonthlyFinancialClosure {
@@ -920,6 +966,7 @@ export interface SponsorContract {
 }
 
 export interface MatchdayRevenueConfig {
+  ticketBasePrice?: number; // Preço-base oficial (R$ 100,00 por torcedor)
   ticketMinPrice?: number; // Preço mínimo do ingresso
   ticketAveragePrice: number; // Preço médio
   ticketMaxPrice?: number; // Preço máximo
@@ -1012,7 +1059,10 @@ export interface ClubFinancialConfig {
   homologatedBy?: string;
 
   // 1. Orçamento Inicial da Temporada
-  initialCash?: number; // Caixa inicial
+  initialCash?: number; // Caixa inicial (R$ 600.000.000)
+  roundsPerFinancialPeriod?: number; // Período financeiro oficial (4 rodadas)
+  sponsorshipPerPeriod?: number; // Patrocínio por período de 4 rodadas (R$ 8.000.000)
+  operationalExpensesPerPeriod?: number; // Despesa operacional por período de 4 rodadas (R$ 3.000.000)
   initialSeasonBudget: number;
   transferBudget: number;
   squadBudget: number;

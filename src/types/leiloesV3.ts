@@ -72,6 +72,7 @@ export interface DarLanceParams {
   minIncrement?: number;
   highestBid?: number;
   prevLeaderClubId?: string | null;
+  clubBalance?: number;
   clubTransferBudget?: number;
   clubReservedBudget?: number;
 }
@@ -103,4 +104,11 @@ export interface CriarLeiloesEmMassaResult {
   totalFalhas: number;
   criados: { leilaoId: string; playerId: string; playerName: string }[];
   falhas: { playerId: string; playerName: string; motivo: string }[];
+}
+
+export interface AtualizarPeriodoEmMassaResult {
+  totalEncontrados: number;
+  totalAtualizados: number;
+  totalIgnorados: number;
+  erros: string[];
 }

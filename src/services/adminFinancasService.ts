@@ -19,6 +19,9 @@ function computeFieldChanges(prev: ClubFinancialConfig, next: ClubFinancialConfi
   };
 
   compare('Caixa Inicial', 'initialCash', prev.initialCash, next.initialCash);
+  compare('Período Financeiro (Rodadas)', 'roundsPerFinancialPeriod', prev.roundsPerFinancialPeriod, next.roundsPerFinancialPeriod);
+  compare('Patrocínio por Período (4 Rodadas)', 'sponsorshipPerPeriod', prev.sponsorshipPerPeriod, next.sponsorshipPerPeriod);
+  compare('Despesa Operacional por Período (4 Rodadas)', 'operationalExpensesPerPeriod', prev.operationalExpensesPerPeriod, next.operationalExpensesPerPeriod);
   compare('Saldo Inicial da Temporada', 'initialSeasonBudget', prev.initialSeasonBudget, next.initialSeasonBudget);
   compare('Orçamento de Transferências', 'transferBudget', prev.transferBudget, next.transferBudget);
   compare('Teto Salarial Mensal', 'wageBudget', prev.wageBudget, next.wageBudget);
@@ -26,6 +29,7 @@ function computeFieldChanges(prev: ClubFinancialConfig, next: ClubFinancialConfi
   compare('Verba para Comissão Técnica', 'coachingStaffBudget', prev.coachingStaffBudget, next.coachingStaffBudget);
   compare('Verba para Staff', 'staffBudget', prev.staffBudget, next.staffBudget);
 
+  compare('Preço-Base do Ingresso', 'matchday.ticketBasePrice', prev.matchday?.ticketBasePrice, next.matchday?.ticketBasePrice);
   compare('Preço Mínimo do Ingresso', 'matchday.ticketMinPrice', prev.matchday?.ticketMinPrice, next.matchday?.ticketMinPrice);
   compare('Preço Médio do Ingresso', 'matchday.ticketAveragePrice', prev.matchday?.ticketAveragePrice, next.matchday?.ticketAveragePrice);
   compare('Preço Máximo do Ingresso', 'matchday.ticketMaxPrice', prev.matchday?.ticketMaxPrice, next.matchday?.ticketMaxPrice);
@@ -72,22 +76,26 @@ export const adminFinancasService = {
   getDefaultConfigForClub(club: Club, seasonYear = '2026/2027'): ClubFinancialConfig {
     const isThales = club.id === 'club-qowYWnG0EfUqrr1a5cHlu4UYmNB3';
 
-    // Parâmetros orçamentários fundamentais (Caixa Inicial é diretriz do Admin, NUNCA herdado do Caixa Real Atual/club.balance)
-    const initialSeasonBudget = isThales ? 20000000 : 35000000;
-    const initialCash = isThales ? 20000000 : 35000000;
-    const transferBudget = isThales ? 20000000 : (club.transferBudget || 20000000);
+    // Parâmetros orçamentários fundamentais oficiais da liga: R$ 600.000.000,00 e 4 rodadas por período
+    const initialSeasonBudget = 600000000;
+    const initialCash = 600000000;
+    const roundsPerFinancialPeriod = 4;
+    const sponsorshipPerPeriod = 8000000; // R$ 8.000.000,00 a cada 4 rodadas
+    const operationalExpensesPerPeriod = 3000000; // R$ 3.000.000,00 a cada 4 rodadas
+    const transferBudget = 600000000;
     const wageBudget = isThales ? 4500000 : (club.wageBudget || 3200000);
     const squadBudget = Math.round(initialSeasonBudget * 0.45);
     const coachingStaffBudget = Math.round(initialSeasonBudget * 0.08);
     const staffBudget = Math.round(initialSeasonBudget * 0.05);
 
-    // Parâmetros do estádio e bilheteria
+    // Parâmetros do estádio e bilheteria oficial: R$ 100,00 por torcedor
     const capacity = isThales ? 75000 : (club.capacity || 40000);
     const occupancyRate = 82; // 82% média
     const expectedAttendance = Math.round(capacity * (occupancyRate / 100));
-    const ticketMinPrice = isThales ? 40 : 30;
-    const ticketAveragePrice = isThales ? 85 : 70;
-    const ticketMaxPrice = isThales ? 180 : 140;
+    const ticketBasePrice = 100; // R$ 100,00 por torcedor
+    const ticketMinPrice = 100;
+    const ticketAveragePrice = 100;
+    const ticketMaxPrice = isThales ? 250 : 200;
     const estimatedMatchRevenue = Math.round(expectedAttendance * ticketAveragePrice);
 
     // Patrocinadores padrão estruturados
@@ -228,6 +236,9 @@ export const adminFinancasService = {
 
       // 1. Orçamento Inicial da Temporada
       initialCash,
+      roundsPerFinancialPeriod,
+      sponsorshipPerPeriod,
+      operationalExpensesPerPeriod,
       initialSeasonBudget,
       transferBudget,
       wageBudget,
@@ -238,8 +249,9 @@ export const adminFinancasService = {
       // 2. Patrocínios
       sponsors,
 
-      // 3. Bilheteria & Receitas de Jogos
+      // 3. Bilheteria & Receitas de Jogos (Preço-base oficial R$ 100,00 por torcedor)
       matchday: {
+        ticketBasePrice,
         ticketMinPrice,
         ticketAveragePrice,
         ticketMaxPrice,
@@ -254,9 +266,9 @@ export const adminFinancasService = {
         otherMatchdayRevenue: 150000,
       },
 
-      // 4. Receitas de TV
+      // 4. Receitas de TV (Oficial: R$ 3.000.000,00 por clube por rodada)
       tvRights: {
-        amountPerRound: isThales ? 920000 : 750000,
+        amountPerRound: 3000000,
         monthlyQuota: isThales ? 2800000 : 2100000,
         amountPerCompetition: isThales ? 22000000 : 16000000,
         bonusQualification: isThales ? 2000000 : 1200000,
@@ -515,17 +527,49 @@ export const adminFinancasService = {
         club = dataStore.getClubById(config.clubId) || null;
       }
       if (club) {
-        const initialCash = Number(config.initialCash ?? config.initialSeasonBudget ?? 20000000);
-        const previousBalance = Number(club.balance ?? 0);
+        const cleanSeason = config.seasonYear.replace(/[\/\s]/g, '-');
+        const initialCashKey = `${cleanSeason}_${club.id}_CAIXA_INICIAL`;
+        const alreadyInitialized = dataStore
+          .getFinances()
+          .some((r) => r.id === initialCashKey || r.operationId === initialCashKey || r.operationType === 'CAIXA_INICIAL');
 
-        // Se for a primeira homologação ou abertura da temporada, estabelece o Caixa Inicial
-        club.balance = initialCash;
-        club.transferBudget = Number(config.transferBudget ?? 20000000);
-        club.wageBudget = Number(config.wageBudget ?? 4500000);
-        club.updatedAt = new Date().toISOString();
+        // Se o clube ainda não tiver o Caixa Inicial oficial registrado, inicializa; caso já tenha (como os R$ 600M homologados), PRESERVA INTACTO!
+        if (!alreadyInitialized && (!club.balance || club.balance === 0)) {
+          const initialCash = Number(config.initialCash ?? config.initialSeasonBudget ?? 600000000);
+          const previousBalance = Number(club.balance ?? 0);
+          club.balance = initialCash;
+          club.transferBudget = Number(config.transferBudget ?? initialCash);
+          club.wageBudget = Number(config.wageBudget ?? 4500000);
+          club.updatedAt = new Date().toISOString();
 
-        await clubesService.save(club);
-        dataStore.saveClub(club);
+          await clubesService.save(club);
+          dataStore.saveClub(club);
+
+          dataStore.addFinanceRecord({
+            id: initialCashKey,
+            operationId: initialCashKey,
+            clubId: club.id,
+            seasonId: config.seasonYear,
+            season: config.seasonYear,
+            operationType: 'CAIXA_INICIAL',
+            type: 'INCOME',
+            inOut: 'CREDIT',
+            category: 'CAIXA_INICIAL',
+            transactionType: 'Capital Inicial da Temporada',
+            description: `Caixa Inicial Homologado - Temporada ${config.seasonYear}`,
+            amount: initialCash,
+            balanceBefore: previousBalance,
+            balanceAfter: initialCash,
+            date: new Date().toISOString().split('T')[0],
+            origin: 'ADMIN_HOMOLOGACAO',
+          });
+        } else {
+          // Atualiza apenas os tetos orçamentários homologados sem alterar o saldo em caixa existente
+          club.wageBudget = Number(config.wageBudget ?? 4500000);
+          club.updatedAt = new Date().toISOString();
+          await clubesService.save(club);
+          dataStore.saveClub(club);
+        }
 
         // Sincroniza sessão ativa no localStorage se for o clube em gestão
         try {
@@ -539,25 +583,6 @@ export const adminFinancasService = {
         } catch {
           // ignore
         }
-
-        // Registra ou atualiza o lançamento oficial de abertura de temporada no extrato oficial
-        dataStore.addFinanceRecord({
-          id: `fin-init-${club.id}-${config.seasonYear.replace(/\//g, '-')}`,
-          clubId: club.id,
-          seasonId: config.seasonYear,
-          season: config.seasonYear,
-          operationType: 'INITIAL_BUDGET',
-          type: 'INCOME',
-          inOut: 'IN',
-          category: 'ORCAMENTO_INICIAL',
-          transactionType: 'Caixa Inicial da Temporada',
-          description: `Caixa Inicial Homologado - Temporada ${config.seasonYear}`,
-          amount: initialCash,
-          balanceBefore: previousBalance,
-          balanceAfter: initialCash,
-          date: new Date().toISOString().split('T')[0],
-          origin: 'ADMIN_HOMOLOGACAO',
-        });
       }
     } catch (err) {
       console.warn('Aviso ao aplicar valores oficiais homologados ao clube:', err);

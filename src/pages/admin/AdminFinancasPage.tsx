@@ -4,6 +4,7 @@ import { useAuth } from '../../contexts/AuthContext';
 import { clubesService } from '../../services/clubesService';
 import { adminFinancasService } from '../../services/adminFinancasService';
 import { caixaRealService } from '../../services/caixaRealService';
+import { sistemaFinanceiroService, SimulationTestResult } from '../../services/sistemaFinanceiroService';
 import {
   Club,
   ClubFinancialConfig,
@@ -117,6 +118,10 @@ export const AdminFinancasPage: React.FC = () => {
 
   // Livro Caixa da Temporada Selecionada
   const [seasonRecords, setSeasonRecords] = useState<FinanceRecord[]>([]);
+
+  // Modal de Testes Simulados Oficiais da Temporada
+  const [isSimulationModalOpen, setIsSimulationModalOpen] = useState(false);
+  const [simulationResults, setSimulationResults] = useState<SimulationTestResult[]>([]);
 
   // 1. Carrega lista de clubes
   useEffect(() => {
@@ -713,6 +718,133 @@ export const AdminFinancasPage: React.FC = () => {
         </div>
       </div>
 
+      {/* PAINEL OFICIAL DE PARÂMETROS ECONÔMICOS DA TEMPORADA 2026/2027 */}
+      <div className="bg-gradient-to-r from-purple-950/70 via-slate-900 to-indigo-950/70 border border-purple-500/40 rounded-2xl p-5 shadow-lg space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+          <div>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] font-black uppercase tracking-wider bg-purple-600 text-white px-2 py-0.5 rounded-full">
+                Regras Oficiais da Liga
+              </span>
+              <span className="text-xs font-mono font-bold text-purple-300">Temporada {selectedSeason}</span>
+            </div>
+            <h3 className="text-base font-black text-white mt-1">
+              Parâmetros Econômicos Homologados do FM Universe
+            </h3>
+            <p className="text-xs text-slate-300 mt-0.5">
+              Configuração oficial da liga: 10 clubes, R$ 600M de caixa inicial, TV R$ 3M/rodada, Ingresso R$ 100, Patrocínio R$ 8M/período e Despesa Operacional R$ 3M/período.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                const results = sistemaFinanceiroService.runSimulationTests();
+                setSimulationResults(results);
+                setIsSimulationModalOpen(true);
+              }}
+              className="bg-emerald-600/30 hover:bg-emerald-600/50 text-emerald-200 border border-emerald-500/40 text-xs font-bold px-3 py-1.5 rounded-xl transition-all cursor-pointer flex items-center gap-1.5"
+            >
+              <CheckCircle2 className="w-3.5 h-3.5 text-emerald-300" />
+              <span>Auditar Regras Econômicas (Testes)</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setConfig({
+                  ...config,
+                  initialCash: 600000000,
+                  initialSeasonBudget: 600000000,
+                  roundsPerFinancialPeriod: 4,
+                  sponsorshipPerPeriod: 8000000,
+                  operationalExpensesPerPeriod: 3000000,
+                  tvRights: { ...config.tvRights, amountPerRound: 3000000 },
+                  matchday: { ...config.matchday, ticketBasePrice: 100, ticketAveragePrice: 100 },
+                  expenses: { ...config.expenses, otherOperationalExpensesMonthly: 3000000 },
+                });
+                setIsEditing(true);
+                setFeedback({
+                  type: 'success',
+                  message: 'Parâmetros econômicos oficiais da Temporada 2026/2027 definidos no formulário! Clique em Salvar Rascunho ou Homologar.',
+                });
+              }}
+              className="bg-purple-600/30 hover:bg-purple-600/50 text-purple-200 border border-purple-500/40 text-xs font-bold px-3 py-1.5 rounded-xl transition-all cursor-pointer flex items-center gap-1.5"
+            >
+              <Sparkles className="w-3.5 h-3.5 text-purple-300" />
+              <span>Aplicar Parâmetros Oficiais 2026/2027</span>
+            </button>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
+          {/* 1. CAIXA INICIAL */}
+          <div className="bg-slate-950/80 border border-emerald-500/40 p-3 rounded-xl">
+            <span className="text-[10px] uppercase font-bold text-emerald-400 block tracking-wider">
+              1. Caixa Inicial
+            </span>
+            <div className="text-sm sm:text-base font-black font-mono text-emerald-300 mt-1">
+              R$ 600M
+            </div>
+            <span className="text-[10px] text-slate-400 block mt-0.5">R$ 600.000.000,00</span>
+          </div>
+
+          {/* 2. PERÍODO FINANCEIRO */}
+          <div className="bg-slate-950/80 border border-indigo-500/40 p-3 rounded-xl">
+            <span className="text-[10px] uppercase font-bold text-indigo-400 block tracking-wider">
+              2. Período
+            </span>
+            <div className="text-sm sm:text-base font-black font-mono text-indigo-300 mt-1">
+              {config.roundsPerFinancialPeriod ?? 4} Rodadas
+            </div>
+            <span className="text-[10px] text-slate-400 block mt-0.5">1 Período = 1 Mês</span>
+          </div>
+
+          {/* 3. TV POR RODADA */}
+          <div className="bg-slate-950/80 border border-cyan-500/40 p-3 rounded-xl">
+            <span className="text-[10px] uppercase font-bold text-cyan-400 block tracking-wider">
+              3. TV / Rodada
+            </span>
+            <div className="text-sm sm:text-base font-black font-mono text-cyan-300 mt-1">
+              {formatCurrencyBRL(config.tvRights?.amountPerRound ?? 3000000, { compact: true })}
+            </div>
+            <span className="text-[10px] text-slate-400 block mt-0.5">Por clube por rodada</span>
+          </div>
+
+          {/* 4. INGRESSO BASE */}
+          <div className="bg-slate-950/80 border border-amber-500/40 p-3 rounded-xl">
+            <span className="text-[10px] uppercase font-bold text-amber-400 block tracking-wider">
+              4. Ingresso
+            </span>
+            <div className="text-sm sm:text-base font-black font-mono text-amber-300 mt-1">
+              R$ {config.matchday?.ticketBasePrice ?? config.matchday?.ticketAveragePrice ?? 100},00
+            </div>
+            <span className="text-[10px] text-slate-400 block mt-0.5">Público × R$ 100</span>
+          </div>
+
+          {/* 5. PATROCÍNIO / PERÍODO */}
+          <div className="bg-slate-950/80 border border-purple-500/40 p-3 rounded-xl">
+            <span className="text-[10px] uppercase font-bold text-purple-400 block tracking-wider">
+              5. Patrocínio
+            </span>
+            <div className="text-sm sm:text-base font-black font-mono text-purple-300 mt-1">
+              {formatCurrencyBRL(config.sponsorshipPerPeriod ?? 8000000, { compact: true })}
+            </div>
+            <span className="text-[10px] text-slate-400 block mt-0.5">A cada 4 rodadas</span>
+          </div>
+
+          {/* 6. DESPESA OPERACIONAL / PERÍODO */}
+          <div className="bg-slate-950/80 border border-rose-500/40 p-3 rounded-xl">
+            <span className="text-[10px] uppercase font-bold text-rose-400 block tracking-wider">
+              6. Desp. Operacional
+            </span>
+            <div className="text-sm sm:text-base font-black font-mono text-rose-300 mt-1">
+              {formatCurrencyBRL(config.operationalExpensesPerPeriod ?? 3000000, { compact: true })}
+            </div>
+            <span className="text-[10px] text-slate-400 block mt-0.5">A cada 4 rodadas</span>
+          </div>
+        </div>
+      </div>
+
       {/* NAVEGAÇÃO ENTRE AS 8 SEÇÕES OFICIAIS */}
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-5 space-y-5">
         <div className="flex items-center gap-2 overflow-x-auto pb-2 border-b border-slate-800 scrollbar-none">
@@ -850,7 +982,7 @@ export const AdminFinancasPage: React.FC = () => {
                 <input
                   type="number"
                   disabled={isSeasonHomologated}
-                  value={config.initialCash ?? config.initialSeasonBudget ?? 20000000}
+                  value={config.initialCash ?? config.initialSeasonBudget ?? 600000000}
                   onChange={(e) => {
                     const val = Number(e.target.value) || 0;
                     setConfig({ ...config, initialCash: val, initialSeasonBudget: val });
@@ -890,6 +1022,132 @@ export const AdminFinancasPage: React.FC = () => {
                     </button>
                   )}
                 </div>
+              </div>
+
+              {/* Período Financeiro Oficial (Rodadas) */}
+              <div className="bg-slate-950 p-4 rounded-xl border border-indigo-900/40 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-indigo-300 block">Período Financeiro (Rodadas)</label>
+                  <span className="text-[9px] uppercase font-bold bg-indigo-950/70 text-indigo-300 px-1.5 py-0.5 rounded border border-indigo-800/60">
+                    Regra Oficial: 4 Rodadas
+                  </span>
+                </div>
+                <input
+                  type="number"
+                  min="1"
+                  max="10"
+                  value={config.roundsPerFinancialPeriod ?? 4}
+                  onChange={(e) => {
+                    const val = Number(e.target.value) || 4;
+                    setConfig({ ...config, roundsPerFinancialPeriod: val });
+                    setIsEditing(true);
+                  }}
+                  className="w-full bg-slate-900 border border-indigo-700/60 text-indigo-200 font-mono font-bold text-sm px-3 py-2 rounded-lg focus:border-indigo-400 focus:outline-none"
+                />
+                <span className="text-[10px] text-slate-500 block">
+                  A cada 4 rodadas é encerrado 1 período financeiro para quitação de salários e despesas.
+                </span>
+              </div>
+
+              {/* Patrocínio por Período Oficial (R$ 8.000.000) */}
+              <div className="bg-slate-950 p-4 rounded-xl border border-purple-900/40 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-purple-300 block">Patrocínio por Período (R$)</label>
+                  <span className="text-[9px] uppercase font-bold bg-purple-950/70 text-purple-300 px-1.5 py-0.5 rounded border border-purple-800/60">
+                    Oficial: R$ 8M / 4 Rodadas
+                  </span>
+                </div>
+                <input
+                  type="number"
+                  value={config.sponsorshipPerPeriod ?? 8000000}
+                  onChange={(e) => {
+                    setConfig({ ...config, sponsorshipPerPeriod: Number(e.target.value) || 0 });
+                    setIsEditing(true);
+                  }}
+                  className="w-full bg-slate-900 border border-purple-700/60 text-purple-200 font-mono font-bold text-sm px-3 py-2 rounded-lg focus:border-purple-400 focus:outline-none"
+                />
+                <span className="text-[10px] text-slate-500 block">
+                  Creditado no fechamento a cada 4 rodadas (TIPO: RECEITA_PATROCINIO).
+                </span>
+              </div>
+
+              {/* Despesa Operacional por Período Oficial (R$ 3.000.000) */}
+              <div className="bg-slate-950 p-4 rounded-xl border border-rose-900/40 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-rose-300 block">Despesa Operacional por Período (R$)</label>
+                  <span className="text-[9px] uppercase font-bold bg-rose-950/70 text-rose-300 px-1.5 py-0.5 rounded border border-rose-800/60">
+                    Oficial: R$ 3M / 4 Rodadas
+                  </span>
+                </div>
+                <input
+                  type="number"
+                  value={config.operationalExpensesPerPeriod ?? 3000000}
+                  onChange={(e) => {
+                    setConfig({ ...config, operationalExpensesPerPeriod: Number(e.target.value) || 0 });
+                    setIsEditing(true);
+                  }}
+                  className="w-full bg-slate-900 border border-rose-700/60 text-rose-200 font-mono font-bold text-sm px-3 py-2 rounded-lg focus:border-rose-400 focus:outline-none"
+                />
+                <span className="text-[10px] text-slate-500 block">
+                  Debitado no fechamento a cada 4 rodadas (TIPO: DESPESA_OPERACIONAL).
+                </span>
+              </div>
+
+              {/* TV por Rodada (R$ 3.000.000) */}
+              <div className="bg-slate-950 p-4 rounded-xl border border-cyan-900/40 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-cyan-300 block">Cota TV por Rodada (R$)</label>
+                  <span className="text-[9px] uppercase font-bold bg-cyan-950/70 text-cyan-300 px-1.5 py-0.5 rounded border border-cyan-800/60">
+                    Oficial: R$ 3M / Rodada
+                  </span>
+                </div>
+                <input
+                  type="number"
+                  value={config.tvRights?.amountPerRound ?? 3000000}
+                  onChange={(e) => {
+                    setConfig({
+                      ...config,
+                      tvRights: { ...config.tvRights, amountPerRound: Number(e.target.value) || 0 },
+                    });
+                    setIsEditing(true);
+                  }}
+                  className="w-full bg-slate-900 border border-cyan-700/60 text-cyan-200 font-mono font-bold text-sm px-3 py-2 rounded-lg focus:border-cyan-400 focus:outline-none"
+                />
+                <span className="text-[10px] text-slate-500 block">
+                  Repasse creditado a cada rodada disputada (TIPO: RECEITA_TV).
+                </span>
+              </div>
+
+              {/* Preço-Base do Ingresso (R$ 100) */}
+              <div className="bg-slate-950 p-4 rounded-xl border border-amber-900/40 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-amber-300 block">Preço-Base do Ingresso (R$)</label>
+                  <span className="text-[9px] uppercase font-bold bg-amber-950/70 text-amber-300 px-1.5 py-0.5 rounded border border-amber-800/60">
+                    Oficial: R$ 100 / Torcedor
+                  </span>
+                </div>
+                <input
+                  type="number"
+                  value={config.matchday?.ticketBasePrice ?? config.matchday?.ticketAveragePrice ?? 100}
+                  onChange={(e) => {
+                    const price = Number(e.target.value) || 100;
+                    const calculatedRev = Math.round(config.matchday.expectedAttendance * price);
+                    setConfig({
+                      ...config,
+                      matchday: {
+                        ...config.matchday,
+                        ticketBasePrice: price,
+                        ticketAveragePrice: price,
+                        estimatedMatchRevenue: calculatedRev,
+                      },
+                    });
+                    setIsEditing(true);
+                  }}
+                  className="w-full bg-slate-900 border border-amber-700/60 text-amber-200 font-mono font-bold text-sm px-3 py-2 rounded-lg focus:border-amber-400 focus:outline-none"
+                />
+                <span className="text-[10px] text-slate-500 block">
+                  Bilheteria = Público Pagante × R$ 100 (TIPO: RECEITA_INGRESSOS).
+                </span>
               </div>
 
               {/* Orçamento de Transferências */}
@@ -1142,7 +1400,37 @@ export const AdminFinancasPage: React.FC = () => {
               </div>
             </div>
 
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+              {/* Preço-Base Oficial (R$ 100,00) */}
+              <div className="bg-slate-950 p-4 rounded-xl border border-amber-900/40 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-amber-300 block">Preço-Base Oficial (R$)</label>
+                  <span className="text-[9px] uppercase font-bold bg-amber-950/70 text-amber-300 px-1.5 py-0.5 rounded border border-amber-800/60">
+                    Oficial: R$ 100
+                  </span>
+                </div>
+                <input
+                  type="number"
+                  value={config.matchday?.ticketBasePrice ?? config.matchday?.ticketAveragePrice ?? 100}
+                  onChange={(e) => {
+                    const price = Number(e.target.value) || 100;
+                    const calculatedRev = Math.round(config.matchday.expectedAttendance * price);
+                    setConfig({
+                      ...config,
+                      matchday: {
+                        ...config.matchday,
+                        ticketBasePrice: price,
+                        ticketAveragePrice: price,
+                        estimatedMatchRevenue: calculatedRev,
+                      },
+                    });
+                    setIsEditing(true);
+                  }}
+                  className="w-full bg-slate-900 border border-amber-700/60 text-amber-200 font-mono font-bold px-3 py-2 rounded-lg focus:border-amber-400 focus:outline-none"
+                />
+                <span className="text-[10px] text-slate-500 block">Fórmula: Público Pagante × Preço-Base</span>
+              </div>
+
               {/* Preço Mínimo */}
               <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-1.5">
                 <label className="text-xs font-bold text-slate-300 block">Preço Mínimo do Ingresso (R$)</label>
@@ -1657,6 +1945,33 @@ export const AdminFinancasPage: React.FC = () => {
             </div>
 
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+              {/* Despesa Operacional Oficial (R$ 3.000.000 / 4 Rodadas) */}
+              <div className="bg-slate-950 p-4 rounded-xl border border-rose-900/40 space-y-1.5">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-rose-300 block">Despesa Operacional Oficial (R$)</label>
+                  <span className="text-[9px] uppercase font-bold bg-rose-950/70 text-rose-300 px-1.5 py-0.5 rounded border border-rose-800/60">
+                    Oficial: R$ 3M / 4 Rodadas
+                  </span>
+                </div>
+                <input
+                  type="number"
+                  value={config.operationalExpensesPerPeriod ?? 3000000}
+                  onChange={(e) => {
+                    const val = Number(e.target.value) || 0;
+                    setConfig({
+                      ...config,
+                      operationalExpensesPerPeriod: val,
+                      expenses: { ...config.expenses, otherOperationalExpensesMonthly: val },
+                    });
+                    setIsEditing(true);
+                  }}
+                  className="w-full bg-slate-900 border border-rose-700/60 text-rose-200 font-mono font-bold text-sm px-3 py-2 rounded-lg focus:border-rose-400 focus:outline-none"
+                />
+                <span className="text-[10px] text-slate-500 block">
+                  Debitado a cada 4 rodadas (TIPO: DESPESA_OPERACIONAL).
+                </span>
+              </div>
+
               {/* Folha Salarial */}
               <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-1.5">
                 <label className="text-xs font-bold text-rose-300 block">Folha Salarial dos Atletas (Mensal)</label>
@@ -2604,6 +2919,108 @@ export const AdminFinancasPage: React.FC = () => {
                   : manualTxType === 'OUT'
                   ? 'Confirmar Débito na Temporada'
                   : 'Confirmar Crédito na Temporada'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: AUDITORIA DE TESTES DAS REGRAS ECONÔMICAS OFICIAIS */}
+      {isSimulationModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-slate-700 rounded-2xl p-6 max-w-2xl w-full space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div>
+                <h3 className="font-bold text-white text-base flex items-center gap-2">
+                  <CheckCircle2 className="w-5 h-5 text-emerald-400" />
+                  <span>Auditoria e Validação das Regras Econômicas (2026/2027)</span>
+                </h3>
+                <p className="text-xs text-slate-400 mt-0.5">
+                  Testes em memória sem alteração ou duplicação dos dados reais dos clubes.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsSimulationModalOpen(false)}
+                className="text-slate-400 hover:text-white text-sm font-bold cursor-pointer"
+              >
+                ✕
+              </button>
+            </div>
+
+            <div className="bg-emerald-950/40 border border-emerald-500/40 rounded-xl p-3.5 flex items-center justify-between">
+              <div>
+                <div className="text-xs font-black uppercase tracking-wider text-emerald-300">
+                  Status da Auditoria Econômica
+                </div>
+                <div className="text-sm font-bold text-white mt-0.5">
+                  {simulationResults.filter((r) => r.passed).length} de {simulationResults.length} Regras Validadas com Sucesso
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  const res = sistemaFinanceiroService.runSimulationTests();
+                  setSimulationResults(res);
+                }}
+                className="bg-emerald-600 hover:bg-emerald-500 text-white font-bold text-xs px-3 py-1.5 rounded-lg transition-all cursor-pointer flex items-center gap-1.5"
+              >
+                <RotateCcw className="w-3.5 h-3.5" />
+                <span>Reexecutar Testes</span>
+              </button>
+            </div>
+
+            <div className="space-y-3">
+              {simulationResults.map((t, idx) => (
+                <div
+                  key={t.testId || idx}
+                  className="bg-slate-950 p-3.5 rounded-xl border border-slate-800 space-y-2"
+                >
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                      <span className="w-5 h-5 rounded-full flex items-center justify-center text-[10px] font-bold bg-emerald-900/60 text-emerald-300 border border-emerald-700/60">
+                        {idx + 1}
+                      </span>
+                      <h4 className="text-xs font-bold text-white">{t.name}</h4>
+                    </div>
+                    <span
+                      className={`text-[10px] uppercase font-mono font-bold px-2 py-0.5 rounded-full border ${
+                        t.passed
+                          ? 'bg-emerald-950/80 text-emerald-300 border-emerald-700/60'
+                          : 'bg-rose-950/80 text-rose-300 border-rose-700/60'
+                      }`}
+                    >
+                      {t.passed ? '✓ APROVADO' : '✗ FALHOU'}
+                    </span>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-2 text-[11px] font-mono bg-slate-900/60 p-2 rounded-lg border border-slate-850">
+                    <div>
+                      <span className="text-[10px] text-slate-500 block font-sans">Valor Esperado:</span>
+                      <span className="text-slate-300">{t.expected}</span>
+                    </div>
+                    <div>
+                      <span className="text-[10px] text-slate-500 block font-sans">Valor Calculado:</span>
+                      <span className="text-emerald-400 font-bold">{t.actual}</span>
+                    </div>
+                  </div>
+
+                  {t.details && (
+                    <p className="text-[11px] text-slate-400 leading-relaxed">
+                      {t.details}
+                    </p>
+                  )}
+                </div>
+              ))}
+            </div>
+
+            <div className="flex justify-end pt-3 border-t border-slate-800">
+              <button
+                type="button"
+                onClick={() => setIsSimulationModalOpen(false)}
+                className="px-5 py-2 rounded-xl text-xs font-bold bg-slate-800 hover:bg-slate-700 text-white cursor-pointer"
+              >
+                Fechar Auditoria
               </button>
             </div>
           </div>

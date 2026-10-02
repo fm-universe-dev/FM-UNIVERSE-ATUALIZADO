@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useNavigation } from '../../contexts/NavigationContext';
 import { useAuth } from '../../contexts/AuthContext';
-import { clubesService } from '../../services/clubesService';
+import { clubesService, ClubesSyncStatus } from '../../services/clubesService';
 import { Club, ClubAuditReport } from '../../types';
 import { formatCurrencyBRL } from '../../utils/currency';
 import { ClubBadge } from '../../components/common/ClubBadge';
@@ -31,6 +31,7 @@ export const AdminClubesPage: React.FC = () => {
   const [auditMap, setAuditMap] = useState<Record<string, ClubAuditReport>>({});
   const [loadingAudit, setLoadingAudit] = useState(false);
   const [activeFilter, setActiveFilter] = useState<FilterType>('ALL');
+  const [syncStatus, setSyncStatus] = useState<ClubesSyncStatus>(() => clubesService.getSyncStatus());
 
   // Modais de Criação / Edição
   const [isModalOpen, setIsModalOpen] = useState(false);
@@ -55,14 +56,27 @@ export const AdminClubesPage: React.FC = () => {
   const [capacity, setCapacity] = useState(35000);
   const [managerName, setManagerName] = useState('Novo Treinador');
 
-  const loadClubsAndAudit = async () => {
+  const loadClubsAndAudit = async (forceRetry = false) => {
     setLoadingAudit(true);
     try {
       const [loadedClubs, reports] = await Promise.all([
-        clubesService.getAll(),
+        clubesService.getAll(forceRetry),
         clubesService.auditAllClubs(),
       ]);
-      setClubs(loadedClubs);
+
+      const currentStatus = clubesService.getSyncStatus();
+      setSyncStatus(currentStatus);
+
+      // Regra de preservação estrita: se a consulta falhou por cota do Firestore,
+      // NUNCA descarta os clubes válidos que já estavam em tela.
+      setClubs((prev) => {
+        if (currentStatus.isQuotaExceeded && prev.length > loadedClubs.length) {
+          console.warn(`⚠️ [AdminClubesPage] Preservando ${prev.length} clubes em tela devido a erro de cota no Firestore.`);
+          return prev;
+        }
+        return loadedClubs;
+      });
+
       const map: Record<string, ClubAuditReport> = {};
       reports.forEach((r) => {
         map[r.clubId] = r;
@@ -219,6 +233,22 @@ export const AdminClubesPage: React.FC = () => {
     return true;
   });
 
+  const formatDateTime = (dateStr?: string | null) => {
+    if (!dateStr) return '-';
+    try {
+      const d = new Date(dateStr);
+      return d.toLocaleString('pt-BR', {
+        day: '2-digit',
+        month: '2-digit',
+        year: 'numeric',
+        hour: '2-digit',
+        minute: '2-digit',
+      });
+    } catch {
+      return dateStr;
+    }
+  };
+
   return (
     <div className="space-y-6">
       {/* Top Header */}
@@ -236,17 +266,35 @@ export const AdminClubesPage: React.FC = () => {
           <p className="text-xs text-slate-400 mt-1">
             Controle total sobre os clubes da liga, elenco, managers vinculados e exclusão administrativa com integridade.
           </p>
+          <div className="flex items-center gap-2 mt-2">
+            {syncStatus.source === 'firestore' ? (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-emerald-950/80 border border-emerald-500/30 text-emerald-400">
+                <CheckCircle2 className="w-3.5 h-3.5" />
+                <span>Firestore Conectado {syncStatus.lastSyncTime ? `(${formatDateTime(syncStatus.lastSyncTime)})` : ''}</span>
+              </span>
+            ) : syncStatus.isQuotaExceeded ? (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-amber-950/80 border border-amber-500/30 text-amber-400">
+                <AlertTriangle className="w-3.5 h-3.5" />
+                <span>Clubes Preservados em Cache {syncStatus.lastSyncTime ? `(${formatDateTime(syncStatus.lastSyncTime)})` : ''}</span>
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-900 border border-slate-700 text-slate-400">
+                <RefreshCw className="w-3.5 h-3.5" />
+                <span>Lista Local de Contingência</span>
+              </span>
+            )}
+          </div>
         </div>
 
         <div className="flex items-center gap-2">
           <button
-            onClick={loadClubsAndAudit}
+            onClick={() => loadClubsAndAudit(true)}
             disabled={loadingAudit}
             className="bg-slate-800 hover:bg-slate-700 text-slate-200 font-semibold px-3 py-2 rounded-xl text-xs flex items-center gap-1.5 transition-all border border-slate-700 cursor-pointer disabled:opacity-50"
-            title="Atualizar lista de todos os clubes"
+            title="Sincronizar com Firestore"
           >
             <RefreshCw className={`w-3.5 h-3.5 ${loadingAudit ? 'animate-spin' : ''}`} />
-            <span>Atualizar</span>
+            <span>Sincronizar</span>
           </button>
 
           <button
@@ -258,6 +306,51 @@ export const AdminClubesPage: React.FC = () => {
           </button>
         </div>
       </div>
+
+      {/* Banner Informativo de Cota Excedida / Preservação de Cache */}
+      {syncStatus.isQuotaExceeded && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-4 bg-amber-950/40 border border-amber-500/40 rounded-xl text-amber-200">
+          <div className="flex items-start gap-3">
+            <AlertTriangle className="w-5 h-5 text-amber-400 shrink-0 mt-0.5" />
+            <div>
+              <div className="text-sm font-semibold text-amber-300">
+                Aviso de Cota do Firestore — Clubes Preservados do Cache
+              </div>
+              <p className="text-xs text-amber-200/80 mt-0.5">
+                A leitura em tempo real do Firestore atingiu a cota temporária de leituras da nuvem. O sistema preservou a última lista válida conhecida ({syncStatus.lastSyncTime ? `sincronizada em ${formatDateTime(syncStatus.lastSyncTime)}` : 'em cache local'}) com todos os clubes existentes da liga, sem substituir os dados por apenas os 6 clubes canônicos.
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => loadClubsAndAudit(true)}
+            disabled={loadingAudit}
+            className="flex items-center justify-center gap-2 px-3.5 py-1.5 bg-amber-600/30 hover:bg-amber-600/50 border border-amber-500/40 rounded-lg text-xs font-semibold text-amber-200 transition-all shrink-0 cursor-pointer"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loadingAudit ? 'animate-spin' : ''}`} />
+            <span>Tentar Novamente</span>
+          </button>
+        </div>
+      )}
+
+      {/* Banner Informativo de Fallback de Emergência */}
+      {syncStatus.source === 'fallback' && !syncStatus.isQuotaExceeded && (
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 p-3.5 bg-slate-900/90 border border-slate-700/60 rounded-xl text-slate-300">
+          <div className="flex items-center gap-2.5 text-xs">
+            <AlertTriangle className="w-4 h-4 text-slate-400 shrink-0" />
+            <span>
+              Lista local de contingência ativa. Clique em Sincronizar para buscar todos os clubes persistidos no Firestore.
+            </span>
+          </div>
+          <button
+            onClick={() => loadClubsAndAudit(true)}
+            disabled={loadingAudit}
+            className="flex items-center gap-1.5 px-3 py-1 bg-slate-800 hover:bg-slate-700 border border-slate-600 rounded text-xs font-medium text-white transition-all shrink-0 cursor-pointer"
+          >
+            <RefreshCw className={`w-3.5 h-3.5 ${loadingAudit ? 'animate-spin' : ''}`} />
+            <span>Sincronizar Agora</span>
+          </button>
+        </div>
+      )}
 
       {feedback && (
         <div className="bg-emerald-500/15 border border-emerald-500/30 text-emerald-300 px-4 py-3 rounded-xl text-xs flex items-center gap-2 animate-in fade-in">
