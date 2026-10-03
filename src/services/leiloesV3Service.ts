@@ -1018,15 +1018,6 @@ export const leiloesV3Service = {
         };
       }
 
-      if (params.clubTransferBudget && params.clubTransferBudget > 0) {
-        if (valorLance > params.clubTransferBudget) {
-          return {
-            success: false,
-            error: `Orçamento insuficiente! O limite de transferências do seu clube é de R$ ${params.clubTransferBudget.toLocaleString('pt-BR')}.`,
-          };
-        }
-      }
-
       const nowIso = new Date().toISOString();
       const generatedLanceId = `lance-${Date.now()}-${Math.random().toString(36).substr(2, 5)}`;
 
@@ -1423,19 +1414,16 @@ export const leiloesV3Service = {
       const nowIso = new Date().toISOString();
       const todayDate = nowIso.split('T')[0];
 
-      // 5. Atualização Financeira: Converter a reserva em gasto efetivo definitivo
-      // Saldo e orçamento são debitados em winningFee.
-      // A reserva financeira é consumida/zerada na mesma proporção.
-      const currentBudget = Number(winnerClub.transferBudget ?? winnerClub.balance ?? currentBalance);
-      const currentReserved = Number(winnerClub.reservedTransferBudget ?? 0);
-
-      const newReserved = Math.max(0, currentReserved - winningFee);
-      const newBudget = Math.max(0, currentBudget - winningFee);
+      // 5. Atualização Financeira: O débito verdadeiro sai EXCLUSIVAMENTE do Caixa Real (club.balance)
+      // O orçamento de transferências (transferBudget) NÃO substitui o Caixa Real e funciona apenas como controle administrativo
       const newBalance = currentBalance - winningFee;
-
-      winnerClub.transferBudget = newBudget;
       winnerClub.balance = newBalance;
-      winnerClub.reservedTransferBudget = newReserved;
+
+      if (typeof winnerClub.transferBudget === 'number') {
+        winnerClub.transferBudget = Math.max(0, winnerClub.transferBudget - winningFee);
+      }
+      const currentReserved = Number(winnerClub.reservedTransferBudget ?? 0);
+      winnerClub.reservedTransferBudget = Math.max(0, currentReserved - winningFee);
       winnerClub.updatedAt = nowIso;
 
       await clubesService.save(winnerClub);

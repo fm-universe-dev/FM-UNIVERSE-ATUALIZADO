@@ -195,9 +195,8 @@ export const sistemaFinanceiroService = {
       origin: 'SISTEMA_FINANCEIRO_INICIALIZACAO',
     };
 
-    // 4. Atualiza o clube com R$ 600.000.000,00 de caixa e orçamento
+    // 4. Atualiza o clube com R$ 600.000.000,00 de Caixa Real (transferBudget e salaryBudget permanecem inalterados)
     club.balance = balanceAfter;
-    club.transferBudget = balanceAfter;
     club.updatedAt = new Date().toISOString();
 
     dataStore.addFinanceRecord(record);
@@ -231,7 +230,10 @@ export const sistemaFinanceiroService = {
    * - Operação 100% idempotente (bloqueada contra execução dupla por chave única).
    * - Só marca a temporada como oficializada se 100% dos clubes forem processados com sucesso.
    */
-  async executeSeasonInitialization(seasonId: string = CURRENT_SEASON_YEAR): Promise<{
+  async executeSeasonInitialization(
+    seasonId: string = CURRENT_SEASON_YEAR,
+    options?: { forceInit?: boolean }
+  ): Promise<{
     success: boolean;
     totalClubs: number;
     initializedClubs: Array<{
@@ -246,6 +248,14 @@ export const sistemaFinanceiroService = {
     seasonStatus: string;
   }> {
     const allClubs = await clubesService.getAll();
+    if (allClubs.length !== 10) {
+      return {
+        success: false,
+        totalClubs: allClubs.length,
+        initializedClubs: [],
+        seasonStatus: `ABORTADO: Quantidade de clubes (${allClubs.length}) diferente de 10.`,
+      };
+    }
     const initializedClubs: Array<{
       clubId: string;
       clubName: string;
@@ -261,7 +271,7 @@ export const sistemaFinanceiroService = {
         const alreadyDone = this.isOperationRecorded(key);
         const previousBal = Number(club.balance ?? 0);
 
-        const res = await this.initializeClubInitialCash(club.id, seasonId);
+        const res = await this.initializeClubInitialCash(club.id, seasonId, options);
         if (!res.success) {
           return {
             success: false,

@@ -141,6 +141,11 @@ service cloud.firestore {
       allow delete: if isAdmin();
     }
 
+    match /extratoFinanceiro/{id} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
     // ==========================================
     // COLEÇÃO /managers
     // Isolamento estrito de Treinadores (Managers):

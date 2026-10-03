@@ -4,7 +4,11 @@ import { useAuth } from '../../contexts/AuthContext';
 import { clubesService } from '../../services/clubesService';
 import { adminFinancasService } from '../../services/adminFinancasService';
 import { caixaRealService } from '../../services/caixaRealService';
-import { sistemaFinanceiroService, SimulationTestResult } from '../../services/sistemaFinanceiroService';
+import {
+  sistemaFinanceiroService,
+  INITIAL_SEASON_CASH,
+  SimulationTestResult,
+} from '../../services/sistemaFinanceiroService';
 import {
   Club,
   ClubFinancialConfig,
@@ -160,7 +164,7 @@ export const AdminFinancasPage: React.FC = () => {
     return caixaRealService.calculateRealBalanceFromHistory(
       selectedClub.id,
       selectedSeason,
-      config?.initialCash ?? selectedClub.balance ?? 25000000
+      config?.initialCash ?? selectedClub.balance ?? INITIAL_SEASON_CASH
     );
   }, [selectedClub, selectedSeason, config?.initialCash, clubs]);
 
@@ -2300,7 +2304,7 @@ export const AdminFinancasPage: React.FC = () => {
                 <div className="bg-slate-900/60 p-2.5 rounded-lg border border-slate-800">
                   <span className="text-[10px] text-slate-500 uppercase block">Caixa Inicial ({selectedSeason})</span>
                   <span className="text-emerald-400 font-bold text-sm">
-                    {formatCurrencyBRL(config?.initialCash ?? config?.initialSeasonBudget ?? 25000000)}
+                    {formatCurrencyBRL(config?.initialCash ?? config?.initialSeasonBudget ?? INITIAL_SEASON_CASH)}
                   </span>
                 </div>
                 <div className="bg-slate-900/60 p-2.5 rounded-lg border border-slate-800">

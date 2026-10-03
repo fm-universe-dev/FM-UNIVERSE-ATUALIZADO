@@ -4,6 +4,7 @@ import { doc, getDoc, setDoc, updateDoc, collection, getDocs, query, where } fro
 import { dataStore } from './dataStore';
 import { clubesService } from './clubesService';
 import { adminFinancasService } from './adminFinancasService';
+import { INITIAL_SEASON_CASH } from './sistemaFinanceiroService';
 
 const STORAGE_KEY_CLOSURES = 'fmu_monthly_closures';
 
@@ -43,7 +44,7 @@ export const caixaRealService = {
     if (local && typeof local.balance === 'number') {
       return local.balance;
     }
-    return 20000000;
+    return INITIAL_SEASON_CASH;
   },
 
   /**
@@ -103,7 +104,7 @@ export const caixaRealService = {
     const balanceBefore = this.calculateRealBalanceFromHistory(
       clubId,
       seasonId,
-      Number(club.balance ?? 25000000)
+      Number(club.balance ?? INITIAL_SEASON_CASH)
     );
 
     // 2. Validação estrita de saldo para saídas
@@ -406,7 +407,7 @@ export const caixaRealService = {
     }
 
     const config = await adminFinancasService.getConfigByClubId(clubId);
-    const initialBalance = Number(club.balance ?? 20000000);
+    const initialBalance = Number(club.balance ?? INITIAL_SEASON_CASH);
 
     // 3. Cálculo da Folha Salarial Real
     // Soma os salários de todos os jogadores atualmente no clube
@@ -600,7 +601,7 @@ export const caixaRealService = {
     explicitFallback?: number
   ): number {
     let seasonYear = '2026/2027';
-    let fallbackInitialCash = 25000000;
+    let fallbackInitialCash = INITIAL_SEASON_CASH;
 
     if (typeof seasonYearOrFallback === 'string') {
       seasonYear = seasonYearOrFallback;

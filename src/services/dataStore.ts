@@ -284,6 +284,8 @@ class DataStore {
       this.reconcileNinjaFC();
       // Reconciliação da exclusão administrativa do Atlântico FC (club-6)
       this.reconcileClub6Deletion();
+      // Inicialização oficial do Caixa Real dos 10 clubes da Temporada 2026/2027
+      this.reconcileSeason2026InitialCash();
     } catch {
       this.resetToDefaults();
     }
@@ -303,11 +305,7 @@ class DataStore {
       const club = this.clubs.find((c) => c.id === clubId);
       if (club) {
         club.capacity = 75000;
-        // Se o saldo do clube refletir o abatimento indevido da despesa antiga (13M) ou o default antigo (20M),
-        // inicializa em R$ 25.000.000 conforme homologação oficial da temporada 2026/2027
-        if (club.balance === 13000000 || club.balance === 20000000 || typeof club.balance !== 'number') {
-          club.balance = 25000000;
-        }
+        // Não força saldo legado de R$ 25.000.000. O saldo oficial é gerido pela rotina da temporada (R$ 600.000.000).
         this.saveToStorage(STORAGE_KEYS.CLUBS, this.clubs);
       }
 
@@ -363,50 +361,33 @@ class DataStore {
         this.saveToStorage(STORAGE_KEYS.FINANCES, this.finances);
       }
 
-      // 3. Garante o registro oficial de abertura INITIAL_BUDGET para a temporada 2026/2027 com R$ 25.000.000
-      let init2026 = this.finances.find(
+      // 3. Remove lançamento legado de abertura de 25M se existir, para não poluir o histórico contábil.
+      // O Caixa Inicial oficial é gerido exclusivamente pela rotina initializeClubInitialCash() com INITIAL_SEASON_CASH (R$ 600.000.000).
+      const hadLegacy25M = this.finances.some(
         (f) =>
           f.clubId === clubId &&
-          (f.operationType === 'INITIAL_BUDGET' || f.category === 'ORCAMENTO_INICIAL') &&
-          (f.seasonId === '2026/2027' || f.season === '2026/2027' || f.id?.includes('2026-2027'))
+          f.amount === 25000000 &&
+          (f.operationType === 'INITIAL_BUDGET' || f.category === 'ORCAMENTO_INICIAL' || f.id?.includes('fin-init'))
       );
-      if (!init2026) {
-        init2026 = {
-          id: `fin-init-${clubId}-2026-2027`,
-          clubId: clubId,
-          seasonId: '2026/2027',
-          season: '2026/2027',
-          operationType: 'INITIAL_BUDGET',
-          type: 'INCOME',
-          inOut: 'IN',
-          category: 'ORCAMENTO_INICIAL',
-          transactionType: 'Caixa Inicial da Temporada',
-          description: 'Caixa Inicial Homologado - Temporada 2026/2027',
-          amount: 25000000,
-          balanceBefore: 0,
-          balanceAfter: 25000000,
-          date: '2026-09-19',
-          origin: 'ADMIN_HOMOLOGACAO',
-        };
-        this.finances.unshift(init2026);
-        this.saveToStorage(STORAGE_KEYS.FINANCES, this.finances);
-      } else {
-        init2026.seasonId = '2026/2027';
-        init2026.season = '2026/2027';
-        if (init2026.amount !== 25000000) {
-          init2026.amount = 25000000;
-          init2026.balanceAfter = 25000000;
-        }
+      if (hadLegacy25M) {
+        this.finances = this.finances.filter(
+          (f) =>
+            !(
+              f.clubId === clubId &&
+              f.amount === 25000000 &&
+              (f.operationType === 'INITIAL_BUDGET' || f.category === 'ORCAMENTO_INICIAL' || f.id?.includes('fin-init'))
+            )
+        );
         this.saveToStorage(STORAGE_KEYS.FINANCES, this.finances);
       }
 
-      // 4. Garante configuração financeira homologada para 2026/2027 com initialCash = 25.000.000
+      // 4. Garante que configurações financeiras não contenham o valor legado de 25M
       let cfg2026 = this.financialConfigs.find(
         (fc) => fc.clubId === clubId && (fc.seasonYear === '2026/2027' || fc.seasonYear === '2026-2027')
       );
-      if (cfg2026) {
-        cfg2026.initialCash = 25000000;
-        cfg2026.initialSeasonBudget = 25000000;
+      if (cfg2026 && (cfg2026.initialCash === 25000000 || cfg2026.initialSeasonBudget === 25000000)) {
+        cfg2026.initialCash = 600000000;
+        cfg2026.initialSeasonBudget = 600000000;
         cfg2026.isHomologated = true;
         cfg2026.status = 'HOMOLOGADA';
         this.saveToStorage(STORAGE_KEYS.FINANCIAL_CONFIGS, this.financialConfigs);
@@ -840,6 +821,61 @@ class DataStore {
       }
     } catch (e) {
       console.warn('Erro ao reconciliar exclusão do Atlântico FC:', e);
+    }
+  }
+
+  /**
+   * Inicialização oficial homologada da Temporada 2026/2027.
+   * Garante que os 10 clubes oficiais recebam o lançamento contábil de Abertura
+   * com R$ 600.000.000,00 de Caixa Real (INITIAL_SEASON_CASH) sem alterar transferBudget ou salaryBudget.
+   */
+  public reconcileSeason2026InitialCash(): void {
+    try {
+      const officialClubIds = [
+        'club-1E32eakvLtgxhAXhdGBdbCsKeg52', // CORINTHIANS
+        'club-3dOrJ03rdGYipkflIjziZx8fd6d2', // SaoPauloBrasil
+        'club-BkeFN9NYE2d1L27hJ63L2LWrL3c2', // Pardal Fc
+        'club-CqUHZEVlVmMcUHXsYAExPP7SQuQ2', // TheCriasOG
+        'club-NKijWNgl4ORYGpkESx1nvBLQpBx1', // Ninja FC
+        'club-RrsKw1Z17HgSQvKrSsp6Cr38SFk2', // Baile de Munique FC
+        'club-XTEQSFH1x9To3EuVESp54vCCFTf2', // Mutant's
+        'club-qBMw9GdVuiVkBB22ZJwVoW1uEXG3', // Nós Travamos
+        'club-qowYWnG0EfUqrr1a5cHlu4UYmNB3', // Thales FC
+        'club-zmm8RxW9iyXIpW5g0hWeqNiPlt12', // NinguemSegura FC
+      ];
+
+      for (const clubId of officialClubIds) {
+        const initKey = `2026-2027_${clubId}_CAIXA_INICIAL`;
+        const exists = this.finances.some((f) => f.id === initKey || f.operationId === initKey);
+        if (!exists) {
+          this.finances.unshift({
+            id: initKey,
+            operationId: initKey,
+            clubId,
+            seasonId: '2026/2027',
+            season: '2026/2027',
+            operationType: 'CAIXA_INICIAL',
+            type: 'INCOME',
+            inOut: 'CREDIT',
+            category: 'CAIXA_INICIAL',
+            transactionType: 'Capital Inicial da Temporada',
+            description: 'Caixa inicial da temporada 2026/2027',
+            amount: 600000000,
+            balanceBefore: 0,
+            balanceAfter: 600000000,
+            date: '2026-10-02',
+            origin: 'SISTEMA_FINANCEIRO_INICIALIZACAO',
+          });
+        }
+        const club = this.clubs.find((c) => c.id === clubId);
+        if (club) {
+          club.balance = 600000000;
+        }
+      }
+      this.saveToStorage(STORAGE_KEYS.FINANCES, this.finances);
+      this.saveToStorage(STORAGE_KEYS.CLUBS, this.clubs);
+    } catch {
+      // ignore
     }
   }
 

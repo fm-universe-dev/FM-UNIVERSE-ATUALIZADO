@@ -194,7 +194,6 @@ export const clubesService = {
               const hasInit = dataStore.getFinances().some((f) => f.id === initKey || f.operationId === initKey);
               if (hasInit) {
                 c.balance = 600000000;
-                c.transferBudget = 600000000;
               }
               dataStore.saveClub(c);
             } catch {
@@ -207,7 +206,6 @@ export const clubesService = {
             const initKey = `2026-2027_${c.id}_CAIXA_INICIAL`;
             if (dataStore.getFinances().some((f) => f.id === initKey || f.operationId === initKey)) {
               c.balance = 600000000;
-              c.transferBudget = 600000000;
             }
           });
 
