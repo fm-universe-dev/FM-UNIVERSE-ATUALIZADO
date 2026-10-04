@@ -9,7 +9,46 @@ import { dataStore } from './dataStore';
 import { clubesService } from './clubesService';
 import { adminFinancasService } from './adminFinancasService';
 import { isFirebaseConfigured, firestoreDb, getFirestoreDb } from '../config/firebase';
-import { doc, setDoc } from 'firebase/firestore';
+import {
+  doc,
+  setDoc,
+  updateDoc,
+  getDoc,
+  getDocFromServer,
+  type DocumentSnapshot,
+} from 'firebase/firestore';
+
+export const OFFICIAL_10_CLUBS = [
+  { id: 'club-1E32eakvLtgxhAXhdGBdbCsKeg52', name: 'CORINTHIANS' },
+  { id: 'club-3dOrJ03rdGYipkflIjziZx8fd6d2', name: 'SaoPauloBrasil' },
+  { id: 'club-BkeFN9NYE2d1L27hJ63L2LWrL3c2', name: 'Pardal Fc' },
+  { id: 'club-CqUHZEVlVmMcUHXsYAExPP7SQuQ2', name: 'TheCriasOG' },
+  { id: 'club-NKijWNgl4ORYGpkESx1nvBLQpBx1', name: 'Ninja FC' },
+  { id: 'club-RrsKw1Z17HgSQvKrSsp6Cr38SFk2', name: 'Baile de Munique FC' },
+  { id: 'club-XTEQSFH1x9To3EuVESp54vCCFTf2', name: "Mutant's" },
+  { id: 'club-qBMw9GdVuiVkBB22ZJwVoW1uEXG3', name: 'Nós Travamos' },
+  { id: 'club-qowYWnG0EfUqrr1a5cHlu4UYmNB3', name: 'Thales FC' },
+  { id: 'club-zmm8RxW9iyXIpW5g0hWeqNiPlt12', name: 'NinguemSegura FC' },
+] as const;
+
+export interface OfficialClubBalanceStatus {
+  clubId: string;
+  name: string;
+  balance: number;
+  transferBudget: number;
+  reservedTransferBudget: number;
+  success: boolean;
+  error?: string;
+}
+
+export interface SeasonCashInitializationReport {
+  success: boolean;
+  totalClubs: number;
+  successCount: number;
+  failedCount: number;
+  clubs: OfficialClubBalanceStatus[];
+  error?: string;
+}
 
 /**
  * ============================================================================
@@ -325,6 +364,213 @@ export const sistemaFinanceiroService = {
       totalClubs: allClubs.length,
       initializedClubs,
       seasonStatus: 'HOMOLOGADA_COM_SUCESSO',
+    };
+  },
+
+  /**
+   * Leitura DIRETA e exclusiva do Firestore dos 10 documentos da coleção /clubes.
+   * Não utiliza dataStore, localStorage ou cache em memória.
+   */
+  async readOfficialClubsFromFirestore(): Promise<OfficialClubBalanceStatus[]> {
+    const db = getFirestoreDb() || firestoreDb;
+    if (!db || !isFirebaseConfigured()) {
+      return OFFICIAL_10_CLUBS.map((c) => ({
+        clubId: c.id,
+        name: c.name,
+        balance: 0,
+        transferBudget: 0,
+        reservedTransferBudget: 0,
+        success: false,
+        error: 'Firestore não configurado ou offline.',
+      }));
+    }
+
+    const results: OfficialClubBalanceStatus[] = [];
+    for (const c of OFFICIAL_10_CLUBS) {
+      try {
+        const clubRef = doc(db, 'clubes', c.id);
+        let snap: DocumentSnapshot;
+        try {
+          snap = await getDocFromServer(clubRef);
+        } catch {
+          snap = await getDoc(clubRef);
+        }
+        if (snap.exists()) {
+          const data = snap.data();
+          results.push({
+            clubId: c.id,
+            name: (data.name as string) || c.name,
+            balance: Number(data.balance ?? 0),
+            transferBudget: Number(data.transferBudget ?? 0),
+            reservedTransferBudget: Number(data.reservedTransferBudget ?? 0),
+            success: true,
+          });
+        } else {
+          results.push({
+            clubId: c.id,
+            name: c.name,
+            balance: 0,
+            transferBudget: 0,
+            reservedTransferBudget: 0,
+            success: false,
+            error: 'Documento não encontrado no Firestore.',
+          });
+        }
+      } catch (err: any) {
+        results.push({
+          clubId: c.id,
+          name: c.name,
+          balance: 0,
+          transferBudget: 0,
+          reservedTransferBudget: 0,
+          success: false,
+          error: err?.message || 'Erro ao ler do Firestore.',
+        });
+      }
+    }
+    return results;
+  },
+
+  /**
+   * Grava EXCLUSIVAMENTE o campo balance = 600000000 diretamente nos 10 documentos /clubes/{clubId} do Firestore.
+   * - Executado utilizando o SDK do Firestore ativo na sessão autenticada do navegador (isAdmin).
+   * - Atualiza estritamente { balance: 600000000 } via updateDoc.
+   * - NÃO altera transferBudget, reservedTransferBudget, wageBudget ou qualquer outro campo.
+   * - NÃO cria lançamentos de receita, despesa ou transferência.
+   * - Faz leitura direta pós-gravação no Firestore para validação obrigatória dos 10 documentos.
+   * - Se qualquer gravação falhar, reporta quais falharam e não conclui como sucesso.
+   * - Idempotente: execuções repetidas não alteram outros dados nem criam cobranças.
+   */
+  async persistOfficialSeasonCashToFirestore(adminUser?: {
+    email?: string;
+    uid?: string;
+  }): Promise<SeasonCashInitializationReport> {
+    const db = getFirestoreDb() || firestoreDb;
+    if (!db || !isFirebaseConfigured()) {
+      return {
+        success: false,
+        totalClubs: OFFICIAL_10_CLUBS.length,
+        successCount: 0,
+        failedCount: OFFICIAL_10_CLUBS.length,
+        clubs: [],
+        error: 'Firebase Firestore não está disponível no cliente.',
+      };
+    }
+
+    const writeErrors: Record<string, string> = {};
+
+    // 1. Gravação direta de { balance: 600000000 } nos 10 clubes
+    for (const c of OFFICIAL_10_CLUBS) {
+      try {
+        const clubRef = doc(db, 'clubes', c.id);
+        // updateDoc envia ESTRITAMENTE o campo balance para o Firestore
+        await updateDoc(clubRef, {
+          balance: INITIAL_SEASON_CASH,
+        });
+      } catch (err: any) {
+        console.error(`❌ [sistemaFinanceiro] Erro ao gravar balance no Firestore para ${c.name} (${c.id}):`, err);
+        writeErrors[c.id] = err?.message || 'Falha ao atualizar documento no Firestore.';
+      }
+    }
+
+    // 2. Leitura Direta de Verificação Obrigatória no Firestore
+    const verifiedList: OfficialClubBalanceStatus[] = [];
+    let hasFailures = Object.keys(writeErrors).length > 0;
+
+    for (const c of OFFICIAL_10_CLUBS) {
+      if (writeErrors[c.id]) {
+        verifiedList.push({
+          clubId: c.id,
+          name: c.name,
+          balance: 0,
+          transferBudget: 0,
+          reservedTransferBudget: 0,
+          success: false,
+          error: writeErrors[c.id],
+        });
+        continue;
+      }
+
+      try {
+        const clubRef = doc(db, 'clubes', c.id);
+        let snap: DocumentSnapshot;
+        try {
+          snap = await getDocFromServer(clubRef);
+        } catch {
+          snap = await getDoc(clubRef);
+        }
+
+        if (!snap.exists()) {
+          hasFailures = true;
+          verifiedList.push({
+            clubId: c.id,
+            name: c.name,
+            balance: 0,
+            transferBudget: 0,
+            reservedTransferBudget: 0,
+            success: false,
+            error: 'Documento não existe após gravação.',
+          });
+          continue;
+        }
+
+        const data = snap.data();
+        const verifiedBal = Number(data.balance ?? 0);
+        const verifiedTransfer = Number(data.transferBudget ?? 0);
+        const verifiedReserved = Number(data.reservedTransferBudget ?? 0);
+
+        const isExactBalance = verifiedBal === INITIAL_SEASON_CASH;
+        if (!isExactBalance) {
+          hasFailures = true;
+        }
+
+        verifiedList.push({
+          clubId: c.id,
+          name: (data.name as string) || c.name,
+          balance: verifiedBal,
+          transferBudget: verifiedTransfer,
+          reservedTransferBudget: verifiedReserved,
+          success: isExactBalance,
+          error: isExactBalance ? undefined : `Saldo lido no Firestore (${verifiedBal}) difere de 600.000.000.`,
+        });
+      } catch (rErr: any) {
+        hasFailures = true;
+        verifiedList.push({
+          clubId: c.id,
+          name: c.name,
+          balance: 0,
+          transferBudget: 0,
+          reservedTransferBudget: 0,
+          success: false,
+          error: `Falha na verificação de leitura: ${rErr?.message || rErr}`,
+        });
+      }
+    }
+
+    const successCount = verifiedList.filter((r) => r.success).length;
+
+    // Se houve sucesso completo em todos os 10, atualiza o cache local para refletir a nova realidade
+    if (!hasFailures && successCount === OFFICIAL_10_CLUBS.length) {
+      try {
+        verifiedList.forEach((item) => {
+          const club = dataStore.getClubById(item.clubId);
+          if (club) {
+            club.balance = INITIAL_SEASON_CASH;
+            dataStore.saveClub(club);
+          }
+        });
+      } catch {
+        // ignore
+      }
+    }
+
+    return {
+      success: !hasFailures && successCount === OFFICIAL_10_CLUBS.length,
+      totalClubs: OFFICIAL_10_CLUBS.length,
+      successCount,
+      failedCount: OFFICIAL_10_CLUBS.length - successCount,
+      clubs: verifiedList,
+      error: hasFailures ? 'Uma ou mais gravações falharam no Firestore.' : undefined,
     };
   },
 

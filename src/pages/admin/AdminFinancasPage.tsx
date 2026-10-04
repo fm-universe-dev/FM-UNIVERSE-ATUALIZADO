@@ -8,6 +8,9 @@ import {
   sistemaFinanceiroService,
   INITIAL_SEASON_CASH,
   SimulationTestResult,
+  OFFICIAL_10_CLUBS,
+  OfficialClubBalanceStatus,
+  SeasonCashInitializationReport,
 } from '../../services/sistemaFinanceiroService';
 import {
   Club,
@@ -54,11 +57,14 @@ import {
   ArrowDownRight,
   ArrowUpRight,
   Lock,
+  Coins,
+  Database,
+  RefreshCw,
 } from 'lucide-react';
 
 export const AdminFinancasPage: React.FC = () => {
   const { navigate } = useNavigation();
-  const { user, isRealAdmin, firebaseEmail, firebaseUid } = useAuth();
+  const { user, isRealAdmin, firebaseEmail, firebaseUid, refreshClubData } = useAuth();
 
   // Permissão de Edição
   const canEdit = isRealAdmin || user?.role === 'ADMIN' || !user?.id;
@@ -126,6 +132,14 @@ export const AdminFinancasPage: React.FC = () => {
   // Modal de Testes Simulados Oficiais da Temporada
   const [isSimulationModalOpen, setIsSimulationModalOpen] = useState(false);
   const [simulationResults, setSimulationResults] = useState<SimulationTestResult[]>([]);
+
+  // Modal de Inicialização Oficial do Caixa Real (R$ 600M nos 10 clubes no Firestore)
+  const [isSeasonInitModalOpen, setIsSeasonInitModalOpen] = useState(false);
+  const [isExecutingInit, setIsExecutingInit] = useState(false);
+  const [initConfirmedCheckbox, setInitConfirmedCheckbox] = useState(false);
+  const [liveFirestoreClubs, setLiveFirestoreClubs] = useState<OfficialClubBalanceStatus[]>([]);
+  const [initReport, setInitReport] = useState<SeasonCashInitializationReport | null>(null);
+  const [isLoadingLiveClubs, setIsLoadingLiveClubs] = useState(false);
 
   // 1. Carrega lista de clubes
   useEffect(() => {
@@ -297,6 +311,65 @@ export const AdminFinancasPage: React.FC = () => {
         type: 'success',
         message: 'Valores padrão da temporada carregados. Clique em "Salvar Rascunho" ou "Homologar" para confirmar.',
       });
+    }
+  };
+
+  // Abertura do Modal de Inicialização Oficial do Caixa Real (R$ 600M nos 10 clubes)
+  const handleOpenSeasonInitModal = async () => {
+    setIsSeasonInitModalOpen(true);
+    setInitReport(null);
+    setInitConfirmedCheckbox(false);
+    setIsLoadingLiveClubs(true);
+    try {
+      const live = await sistemaFinanceiroService.readOfficialClubsFromFirestore();
+      setLiveFirestoreClubs(live);
+    } catch (e: any) {
+      console.warn('Erro ao ler clubes do Firestore:', e);
+    } finally {
+      setIsLoadingLiveClubs(false);
+    }
+  };
+
+  // Execução direta no Firestore pelo Administrador autenticado no navegador
+  const handleExecuteSeasonCashInit = async () => {
+    if (!isRealAdmin && firebaseEmail !== 'vmseguroservico@gmail.com') {
+      alert('Acesso negado: Apenas o Administrador autenticado pode executar esta operação.');
+      return;
+    }
+    if (!initConfirmedCheckbox) {
+      alert('Por favor, marque a caixa de confirmação para autorizar a gravação no Firestore.');
+      return;
+    }
+
+    setIsExecutingInit(true);
+    try {
+      const report = await sistemaFinanceiroService.persistOfficialSeasonCashToFirestore({
+        email: firebaseEmail || user?.email,
+        uid: firebaseUid || user?.id,
+      });
+      setInitReport(report);
+
+      if (report.success) {
+        setFeedback({
+          type: 'success',
+          message: 'Caixa Real Oficial de R$ 600.000.000 gravado e verificado com sucesso diretamente nos 10 clubes no Firestore!',
+        });
+        const updated = await clubesService.getAll();
+        setClubs(updated);
+        refreshClubData?.();
+      } else {
+        setFeedback({
+          type: 'error',
+          message: report.error || 'Uma ou mais gravações falharam no Firestore. Verifique os detalhes na tabela abaixo.',
+        });
+      }
+    } catch (err: any) {
+      setFeedback({
+        type: 'error',
+        message: `Falha na gravação do Firestore: ${err?.message || err}`,
+      });
+    } finally {
+      setIsExecutingInit(false);
     }
   };
 
@@ -596,6 +669,17 @@ export const AdminFinancasPage: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-2 w-full sm:w-auto">
+            {/* Botão Inicializar Caixa Real (R$ 600M nos 10 Clubes) */}
+            <button
+              onClick={handleOpenSeasonInitModal}
+              disabled={saving || isExecutingInit}
+              className="flex-1 sm:flex-initial flex items-center justify-center gap-2 bg-emerald-950/80 hover:bg-emerald-900 text-emerald-300 hover:text-white border border-emerald-500/50 font-bold text-xs px-4 py-2 rounded-xl shadow-lg shadow-emerald-950/40 transition-all cursor-pointer disabled:opacity-50"
+              title="Definir Caixa Real Inicial de R$ 600.000.000 diretamente no Firestore para os 10 clubes"
+            >
+              <Coins className="w-4 h-4 text-emerald-400" />
+              <span>Inicializar Caixa Real (R$ 600M)</span>
+            </button>
+
             {/* Botão Salvar Rascunho */}
             <button
               onClick={() => setIsDraftModalOpen(true)}
@@ -3026,6 +3110,228 @@ export const AdminFinancasPage: React.FC = () => {
               >
                 Fechar Auditoria
               </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* MODAL: INICIALIZAÇÃO OFICIAL DO CAIXA REAL (R$ 600M NO FIRESTORE) */}
+      {isSeasonInitModalOpen && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div className="bg-slate-900 border border-emerald-500/40 rounded-2xl p-6 max-w-4xl w-full space-y-4 shadow-2xl max-h-[90vh] overflow-y-auto">
+            {/* Cabeçalho */}
+            <div className="flex items-center justify-between border-b border-slate-800 pb-3">
+              <div className="flex items-center gap-2.5">
+                <div className="p-2 bg-emerald-500/10 border border-emerald-500/30 rounded-xl text-emerald-400">
+                  <Coins className="w-5 h-5" />
+                </div>
+                <div>
+                  <h3 className="font-bold text-white text-base">
+                    Definição do Caixa Real Oficial (Temporada {selectedSeason})
+                  </h3>
+                  <p className="text-xs text-slate-400">
+                    Gravação direta e auditada nos 10 documentos <code className="text-emerald-400 font-mono">/clubes</code> no Firestore
+                  </p>
+                </div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setIsSeasonInitModalOpen(false)}
+                disabled={isExecutingInit}
+                className="text-slate-400 hover:text-white text-sm font-bold cursor-pointer disabled:opacity-50"
+              >
+                ✕
+              </button>
+            </div>
+
+            {/* Aviso de Confirmação Obrigatório */}
+            <div className="bg-emerald-950/40 border border-emerald-500/40 rounded-xl p-4 text-emerald-200 text-xs space-y-2">
+              <div className="flex items-start gap-2.5">
+                <Shield className="w-4 h-4 text-emerald-400 shrink-0 mt-0.5" />
+                <div className="space-y-1">
+                  <strong className="text-white text-sm block">
+                    Confirmação Administrativa Obrigatória
+                  </strong>
+                  <p className="text-emerald-300 font-semibold text-xs leading-relaxed">
+                    “Esta operação irá definir o Caixa Real dos 10 clubes para R$ 600.000.000. Os demais campos serão preservados.”
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Detalhes de Segurança e Escopo */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3 text-xs">
+              <div className="bg-slate-950 p-3.5 rounded-xl border border-slate-800 space-y-1.5">
+                <span className="text-slate-400 font-semibold block uppercase text-[10px] tracking-wider">
+                  O que SERÁ atualizado:
+                </span>
+                <ul className="text-slate-300 space-y-1 text-[11px] list-disc list-inside">
+                  <li><strong className="text-emerald-400">balance: 600000000</strong> (Caixa Real de R$ 600.000.000,00)</li>
+                  <li>Gravado diretamente nos 10 documentos oficiais no Firestore via <code className="text-slate-400">updateDoc</code></li>
+                  <li>Executado com a sessão Firebase Auth ativa do Administrador (<span className="text-white font-mono">{firebaseEmail || 'vmseguroservico@gmail.com'}</span>)</li>
+                </ul>
+              </div>
+
+              <div className="bg-slate-950 p-3.5 rounded-xl border border-slate-800 space-y-1.5">
+                <span className="text-slate-400 font-semibold block uppercase text-[10px] tracking-wider">
+                  O que NÃO SERÁ alterado (100% Preservado):
+                </span>
+                <ul className="text-slate-300 space-y-1 text-[11px] list-disc list-inside">
+                  <li><strong className="text-cyan-400">transferBudget</strong> permanece intocado</li>
+                  <li><strong className="text-amber-400">reservedTransferBudget</strong> permanece intocado (ex.: Ninja FC R$ 1.700.000)</li>
+                  <li><strong className="text-slate-400">wageBudget / plantéis / 1.340 leilões</strong> intactos</li>
+                  <li>Nenhum lançamento de receita, despesa ou transferência gerado</li>
+                </ul>
+              </div>
+            </div>
+
+            {/* Checkbox de Confirmação Humana */}
+            {!initReport && (
+              <label className="flex items-center gap-3 p-3 bg-slate-950/80 rounded-xl border border-slate-800 cursor-pointer hover:border-slate-700 transition-all">
+                <input
+                  type="checkbox"
+                  checked={initConfirmedCheckbox}
+                  onChange={(e) => setInitConfirmedCheckbox(e.target.checked)}
+                  disabled={isExecutingInit}
+                  className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 bg-slate-900 border-slate-700 cursor-pointer"
+                />
+                <span className="text-xs text-slate-300 font-medium">
+                  Confirmo que sou o Administrador autenticado (<span className="text-white font-mono">{firebaseEmail || 'vmseguroservico@gmail.com'}</span>) e autorizo a definição do Caixa Real dos 10 clubes para R$ 600.000.000 no Firestore.
+                </span>
+              </label>
+            )}
+
+            {/* Tabela de Leitura / Verificação Obrigatória */}
+            <div className="space-y-2">
+              <div className="flex items-center justify-between">
+                <span className="text-xs font-bold text-slate-300 flex items-center gap-1.5">
+                  <Database className="w-3.5 h-3.5 text-cyan-400" />
+                  {initReport
+                    ? 'Leitura Direta Pós-Gravação no Firestore (Verificação Obrigatória)'
+                    : 'Leitura Direta Atual no Firestore (Antes da Gravação)'}
+                </span>
+                {isLoadingLiveClubs && (
+                  <span className="text-[11px] text-cyan-400 animate-pulse">Lendo Firestore...</span>
+                )}
+              </div>
+
+              <div className="overflow-x-auto rounded-xl border border-slate-800 bg-slate-950">
+                <table className="w-full text-left text-xs font-mono">
+                  <thead className="bg-slate-900 text-slate-400 border-b border-slate-800 text-[11px]">
+                    <tr>
+                      <th className="py-2.5 px-3">Clube</th>
+                      <th className="py-2.5 px-3">clubId</th>
+                      <th className="py-2.5 px-3">balance REAL</th>
+                      <th className="py-2.5 px-3">transferBudget</th>
+                      <th className="py-2.5 px-3">reservedTransferBudget</th>
+                      <th className="py-2.5 px-3 text-right">Resultado</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-slate-900 text-slate-300">
+                    {(initReport ? initReport.clubs : liveFirestoreClubs).map((c) => (
+                      <tr key={c.clubId} className="hover:bg-slate-900/40">
+                        <td className="py-2 px-3 font-sans font-bold text-white flex items-center gap-1.5">
+                          <ClubBadge clubName={c.name} size="sm" />
+                          <span>{c.name}</span>
+                        </td>
+                        <td className="py-2 px-3 text-[10px] text-slate-400">{c.clubId}</td>
+                        <td className="py-2 px-3 font-bold text-emerald-400">
+                          {formatCurrencyBRL(c.balance)}
+                        </td>
+                        <td className="py-2 px-3 text-cyan-300">
+                          {formatCurrencyBRL(c.transferBudget)}
+                        </td>
+                        <td className="py-2 px-3 text-amber-300 font-semibold">
+                          {formatCurrencyBRL(c.reservedTransferBudget)}
+                        </td>
+                        <td className="py-2 px-3 text-right">
+                          {initReport ? (
+                            c.success ? (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded bg-emerald-950 border border-emerald-500/40 text-emerald-300">
+                                <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                                600M GRAVADO
+                              </span>
+                            ) : (
+                              <span className="inline-flex items-center gap-1 text-[10px] font-bold px-2 py-0.5 rounded bg-rose-950 border border-rose-500/40 text-rose-300" title={c.error}>
+                                <AlertCircle className="w-3 h-3 text-rose-400" />
+                                FALHOU
+                              </span>
+                            )
+                          ) : (
+                            <span className="text-[10px] text-slate-500">Saldo Atual</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Relatório Final se executado */}
+            {initReport && (
+              <div
+                className={`p-3.5 rounded-xl border text-xs flex items-center justify-between ${
+                  initReport.success
+                    ? 'bg-emerald-950/50 border-emerald-500/50 text-emerald-200'
+                    : 'bg-rose-950/50 border-rose-500/50 text-rose-200'
+                }`}
+              >
+                <div className="flex items-center gap-2">
+                  {initReport.success ? (
+                    <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+                  ) : (
+                    <AlertCircle className="w-4 h-4 text-rose-400 shrink-0" />
+                  )}
+                  <span>
+                    {initReport.success
+                      ? 'Sucesso: 10/10 clubes gravados e confirmados diretamente no Firestore com balance = R$ 600.000.000,00!'
+                      : `Atenção: ${initReport.failedCount} clube(s) falharam na gravação/validação. A operação não foi concluída integralmente.`}
+                  </span>
+                </div>
+                <span className="font-mono font-bold text-white">
+                  {initReport.successCount}/10 confirmados
+                </span>
+              </div>
+            )}
+
+            {/* Rodapé / Ações */}
+            <div className="flex items-center justify-between pt-3 border-t border-slate-800">
+              <span className="text-[11px] text-slate-500">
+                Idempotente: execuções repetidas não duplicam cobranças nem alteram outros campos.
+              </span>
+
+              <div className="flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setIsSeasonInitModalOpen(false)}
+                  disabled={isExecutingInit}
+                  className="px-4 py-2 rounded-xl text-xs font-bold bg-slate-800 hover:bg-slate-700 text-slate-300 cursor-pointer disabled:opacity-50"
+                >
+                  {initReport?.success ? 'Concluir e Fechar' : 'Cancelar'}
+                </button>
+
+                {!initReport?.success && (
+                  <button
+                    type="button"
+                    onClick={handleExecuteSeasonCashInit}
+                    disabled={isExecutingInit || !initConfirmedCheckbox}
+                    className="flex items-center gap-2 bg-gradient-to-r from-emerald-600 to-teal-600 hover:from-emerald-500 hover:to-teal-500 text-white font-bold text-xs px-5 py-2 rounded-xl shadow-lg shadow-emerald-950/50 transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
+                  >
+                    {isExecutingInit ? (
+                      <>
+                        <RefreshCw className="w-3.5 h-3.5 animate-spin" />
+                        <span>Gravando nos 10 Clubes...</span>
+                      </>
+                    ) : (
+                      <>
+                        <Coins className="w-3.5 h-3.5" />
+                        <span>Confirmar e Gravar no Firestore (10 Clubes)</span>
+                      </>
+                    )}
+                  </button>
+                )}
+              </div>
             </div>
           </div>
         </div>
