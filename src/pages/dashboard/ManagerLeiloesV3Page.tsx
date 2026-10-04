@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useCallback } from 'react';
 import {
   Gavel,
   Shield,
@@ -12,12 +12,91 @@ import {
   User,
   Search,
 } from 'lucide-react';
+import { doc, getDoc, onSnapshot } from 'firebase/firestore';
+import { getFirestoreDb, firestoreDb } from '../../config/firebase';
+import { Club } from '../../types';
 import { leiloesV3Service } from '../../services/leiloesV3Service';
 import { Leilao, Lance } from '../../types/leiloesV3';
 import { useAuth } from '../../contexts/AuthContext';
 
 export const ManagerLeiloesV3Page: React.FC = () => {
   const { firebaseUser, user, managerProfile, managedClub, refreshClubData, refreshManagerProfile } = useAuth();
+
+  // Estado local do clube com sincronização em tempo real do Firestore (/clubes/{clubId})
+  const [clubeAtualizado, setClubeAtualizado] = useState<Club | null>(null);
+  const clubeExibido = clubeAtualizado || managedClub;
+
+  // Sincroniza estado inicial com managedClub
+  useEffect(() => {
+    if (managedClub) {
+      setClubeAtualizado((prev) => (prev ? { ...prev, ...managedClub } : managedClub));
+    }
+  }, [managedClub]);
+
+  // Função para releitura forçada direta do documento real /clubes/{clubId} no Firestore
+  const recarregarClubeFirestore = useCallback(async () => {
+    const clubId = managedClub?.id || managerProfile?.clubId || user?.managedClubId;
+    if (!clubId || clubId === 'sem-clube') return;
+
+    try {
+      const db = getFirestoreDb() || firestoreDb;
+      if (db) {
+        const snap = await getDoc(doc(db, 'clubes', clubId));
+        if (snap.exists()) {
+          const cloudData = snap.data();
+          const updated: Club = {
+            ...(managedClub || {}),
+            ...cloudData,
+            id: snap.id,
+            balance: Number(cloudData.balance ?? managedClub?.balance ?? 0),
+            reservedTransferBudget: Number(cloudData.reservedTransferBudget ?? 0),
+            transferBudget: Number(cloudData.transferBudget ?? managedClub?.transferBudget ?? 0),
+          } as Club;
+          setClubeAtualizado(updated);
+          try {
+            localStorage.setItem('fmu_current_managed_club', JSON.stringify(updated));
+          } catch {
+            // ignore
+          }
+        }
+      }
+    } catch (err) {
+      console.warn('⚠️ [Leilões] Falha ao recarregar clube do Firestore:', err);
+    }
+  }, [managedClub, managerProfile?.clubId, user?.managedClubId]);
+
+  // Listener em tempo real direto do documento /clubes/{clubId} no Firestore
+  // Garante que a interface reflita reservedTransferBudget imediatamente após lances
+  useEffect(() => {
+    const clubId = managedClub?.id || managerProfile?.clubId || user?.managedClubId;
+    if (!clubId || clubId === 'sem-clube') return;
+
+    const db = getFirestoreDb() || firestoreDb;
+    if (!db) return;
+
+    const clubRef = doc(db, 'clubes', clubId);
+    const unsub = onSnapshot(
+      clubRef,
+      (snap) => {
+        if (snap.exists()) {
+          const cloudData = snap.data();
+          setClubeAtualizado((prev) => ({
+            ...(prev || managedClub || {}),
+            ...cloudData,
+            id: snap.id,
+            balance: Number(cloudData.balance ?? prev?.balance ?? 0),
+            reservedTransferBudget: Number(cloudData.reservedTransferBudget ?? 0),
+            transferBudget: Number(cloudData.transferBudget ?? prev?.transferBudget ?? 0),
+          } as Club));
+        }
+      },
+      (err) => {
+        console.warn('⚠️ [Leilões] Erro no listener em tempo real do clube:', err);
+      }
+    );
+
+    return () => unsub();
+  }, [managedClub?.id, managerProfile?.clubId, user?.managedClubId]);
 
   // Lista de Leilões (/leiloes)
   const [leiloes, setLeiloes] = useState<Leilao[]>([]);
@@ -207,6 +286,8 @@ export const ManagerLeiloesV3Page: React.FC = () => {
     setLeilaoAtivo(l);
     setFeedback(null);
     setValorLance(Number(l.initialBid));
+    // Força leitura fresca do Firestore para garantir reserva atualizada imediatamente
+    recarregarClubeFirestore();
   };
 
   // Submissão de lance: UMA ÚNICA gravação em /leiloes/{leilaoId}/lances
@@ -237,15 +318,15 @@ export const ManagerLeiloesV3Page: React.FC = () => {
       leilaoId: leilaoAtivo.id,
       managerId: currentUid,
       managerName: managerProfile?.name || user?.name || firebaseUser?.displayName || 'Treinador',
-      clubId: managedClub?.id || 'sem-clube',
+      clubId: clubeExibido?.id || 'sem-clube',
       value: valorLance,
       initialBid: Number(leilaoAtivo.initialBid) || 0,
       minIncrement: Number(leilaoAtivo.minIncrement) || 0,
       highestBid: highestBidInModal,
       prevLeaderClubId: prevLeaderClubIdInModal,
-      clubBalance: Number(managedClub?.balance ?? 0),
-      clubTransferBudget: Number(managedClub?.balance ?? 0),
-      clubReservedBudget: Number(managedClub?.reservedTransferBudget ?? 0),
+      clubBalance: Number(clubeExibido?.balance ?? 0),
+      clubTransferBudget: Number(clubeExibido?.balance ?? 0),
+      clubReservedBudget: Number(clubeExibido?.reservedTransferBudget ?? 0),
     });
 
     setSubmitting(false);
@@ -255,6 +336,8 @@ export const ManagerLeiloesV3Page: React.FC = () => {
         type: 'success',
         message: `Lance de R$ ${valorLance.toLocaleString('pt-BR')} registrado com sucesso em /leiloes/${leilaoAtivo.id}/lances/${res.id}!`,
       });
+      // Releitura do documento real do Firestore após lance confirmado
+      await recarregarClubeFirestore();
       refreshClubData?.();
       refreshManagerProfile?.();
     } else {
@@ -281,10 +364,10 @@ export const ManagerLeiloesV3Page: React.FC = () => {
           </div>
         </div>
 
-        {managedClub && (
+        {clubeExibido && (
           <div className="flex items-center gap-2 px-3.5 py-1.5 bg-slate-800 border border-slate-700 rounded-xl text-xs">
             <Shield className="w-4 h-4 text-amber-400" />
-            <span className="text-white font-medium">{managedClub.name}</span>
+            <span className="text-white font-medium">{clubeExibido.name}</span>
           </div>
         )}
       </div>
@@ -646,24 +729,24 @@ export const ManagerLeiloesV3Page: React.FC = () => {
             )}
 
             {/* Indicadores Financeiros do Clube (apenas para leilão aberto) */}
-            {managedClub && leilaoAtivo.status === 'ABERTO' && (
+            {clubeExibido && leilaoAtivo.status === 'ABERTO' && (
               <div className="grid grid-cols-3 gap-2 p-3 bg-slate-950/80 rounded-xl border border-slate-800 text-center text-xs">
                 <div>
                   <span className="text-slate-400 block text-[10px] uppercase font-semibold">Orçamento Total</span>
                   <span className="font-mono font-bold text-slate-200">
-                    R$ {Number(managedClub.balance ?? 0).toLocaleString('pt-BR')}
+                    R$ {Number(clubeExibido.balance ?? 0).toLocaleString('pt-BR')}
                   </span>
                 </div>
                 <div>
                   <span className="text-amber-400/90 block text-[10px] uppercase font-semibold">Reserva Retida</span>
                   <span className="font-mono font-bold text-amber-400">
-                    R$ {Number(managedClub.reservedTransferBudget ?? 0).toLocaleString('pt-BR')}
+                    R$ {Number(clubeExibido.reservedTransferBudget ?? 0).toLocaleString('pt-BR')}
                   </span>
                 </div>
                 <div>
                   <span className="text-emerald-400/90 block text-[10px] uppercase font-semibold">Disponível</span>
                   <span className="font-mono font-bold text-emerald-400">
-                    R$ {Math.max(0, Number(managedClub.balance ?? 0) - Number(managedClub.reservedTransferBudget ?? 0)).toLocaleString('pt-BR')}
+                    R$ {Math.max(0, Number(clubeExibido.balance ?? 0) - Number(clubeExibido.reservedTransferBudget ?? 0)).toLocaleString('pt-BR')}
                   </span>
                 </div>
               </div>
