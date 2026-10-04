@@ -367,6 +367,12 @@ export interface Club {
   transferBudget: number;
   reservedTransferBudget?: number; // Valor temporariamente retido por lances ativos em leilões
   wageBudget: number;
+  payroll?: {
+    totalMonthlyPayroll?: number;
+    playerSalaries?: number;
+    coachingStaffWages?: number;
+    operationalStaffWages?: number;
+  };
   balance: number;
   managerName: string;
   squadCount: number;

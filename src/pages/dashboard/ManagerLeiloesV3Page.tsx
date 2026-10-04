@@ -244,7 +244,7 @@ export const ManagerLeiloesV3Page: React.FC = () => {
       highestBid: highestBidInModal,
       prevLeaderClubId: prevLeaderClubIdInModal,
       clubBalance: Number(managedClub?.balance ?? 0),
-      clubTransferBudget: Number(managedClub?.transferBudget ?? managedClub?.balance ?? 0),
+      clubTransferBudget: Number(managedClub?.balance ?? 0),
       clubReservedBudget: Number(managedClub?.reservedTransferBudget ?? 0),
     });
 
@@ -651,7 +651,7 @@ export const ManagerLeiloesV3Page: React.FC = () => {
                 <div>
                   <span className="text-slate-400 block text-[10px] uppercase font-semibold">Orçamento Total</span>
                   <span className="font-mono font-bold text-slate-200">
-                    R$ {Number(managedClub.transferBudget ?? managedClub.balance ?? 0).toLocaleString('pt-BR')}
+                    R$ {Number(managedClub.balance ?? 0).toLocaleString('pt-BR')}
                   </span>
                 </div>
                 <div>
@@ -663,7 +663,7 @@ export const ManagerLeiloesV3Page: React.FC = () => {
                 <div>
                   <span className="text-emerald-400/90 block text-[10px] uppercase font-semibold">Disponível</span>
                   <span className="font-mono font-bold text-emerald-400">
-                    R$ {Math.max(0, Number(managedClub.transferBudget ?? managedClub.balance ?? 0) - Number(managedClub.reservedTransferBudget ?? 0)).toLocaleString('pt-BR')}
+                    R$ {Math.max(0, Number(managedClub.balance ?? 0) - Number(managedClub.reservedTransferBudget ?? 0)).toLocaleString('pt-BR')}
                   </span>
                 </div>
               </div>

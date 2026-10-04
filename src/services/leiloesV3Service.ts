@@ -1294,8 +1294,8 @@ export const leiloesV3Service = {
         return { success: false, error: 'Leilão não encontrado.' };
       }
 
-      // Idempotência: Se já foi liquidado, não processa novamente
-      if (leilao.settled === true) {
+      // Idempotência / Proteção contra Dupla Finalização: Se já foi liquidado, não processa novamente
+      if (leilao.settled === true || (leilao.status === 'ENCERRADO' && Boolean(leilao.winnerClubId))) {
         return {
           success: true,
           alreadySettled: true,
@@ -1456,15 +1456,32 @@ export const leiloesV3Service = {
       const todayDate = nowIso.split('T')[0];
 
       // 5. Atualização Financeira: O débito verdadeiro sai EXCLUSIVAMENTE do Caixa Real (club.balance)
-      // O orçamento de transferências (transferBudget) NÃO substitui o Caixa Real e funciona apenas como controle administrativo
+      // O transferBudget NÃO pode bloquear nem financiar a compra
       const newBalance = currentBalance - winningFee;
       winnerClub.balance = newBalance;
 
-      if (typeof winnerClub.transferBudget === 'number') {
-        winnerClub.transferBudget = Math.max(0, winnerClub.transferBudget - winningFee);
-      }
+      // Desbloqueia a reserva retida vinculada a este leilão
       const currentReserved = Number(winnerClub.reservedTransferBudget ?? 0);
       winnerClub.reservedTransferBudget = Math.max(0, currentReserved - winningFee);
+
+      // Adiciona o salário mensal do atleta ao payroll.totalMonthlyPayroll
+      const playerMonthlyWage = Number(player.wage ?? (player as any).salary ?? 0);
+      if (!winnerClub.payroll) {
+        winnerClub.payroll = {
+          totalMonthlyPayroll: playerMonthlyWage,
+          playerSalaries: playerMonthlyWage,
+        };
+      } else {
+        winnerClub.payroll.totalMonthlyPayroll = Number(winnerClub.payroll.totalMonthlyPayroll || 0) + playerMonthlyWage;
+        if (typeof winnerClub.payroll.playerSalaries === 'number') {
+          winnerClub.payroll.playerSalaries += playerMonthlyWage;
+        }
+      }
+      if (winnerClub.financialConfig?.expenses) {
+        winnerClub.financialConfig.expenses.payrollWageMonthly =
+          Number(winnerClub.financialConfig.expenses.payrollWageMonthly || 0) + playerMonthlyWage;
+      }
+
       winnerClub.updatedAt = nowIso;
 
       await clubesService.save(winnerClub);
@@ -1538,28 +1555,49 @@ export const leiloesV3Service = {
 
       // 9. Registrar Notícia e Lançamento Financeiro no Caixa Real e Livro Caixa
       const transferFinanceKey = `2026-2027_${winnerClub.id}_TRANSFERENCIA_${leilaoId}`;
-      dataStore.addFinanceRecord({
+      const livroCaixaEntry = {
         id: transferFinanceKey,
         operationId: transferFinanceKey,
         clubId: winnerClub.id,
+        clubName: winnerClub.name,
+        clube: winnerClub.name,
+        playerId: player.id,
+        playerName: player.name,
+        jogador: player.name,
+        leilaoId,
+        auctionId: leilaoId,
+        leilao: leilaoId,
         seasonId: '2026/2027',
         season: '2026/2027',
+        temporada: '2026/2027',
+        amount: winningFee,
+        valor: winningFee,
+        balanceBefore: currentBalance,
+        saldoAnterior: currentBalance,
+        balanceAfter: newBalance,
+        saldoPosterior: newBalance,
         date: todayDate,
-        type: 'EXPENSE',
-        inOut: 'OUT',
+        data: todayDate,
+        type: 'EXPENSE' as const,
+        inOut: 'OUT' as const,
         operationType: 'TRANSFERENCIA_COMPRA',
         category: 'TRANSFERENCIA_COMPRA',
         transactionType: 'Contratação em leilão',
         description: `Contratação de ${player.name} (Leilão #${leilaoId})`,
-        amount: winningFee,
-        balanceBefore: currentBalance,
-        balanceAfter: newBalance,
         referenceId: leilaoId,
-        auctionId: leilaoId,
-        playerId: player.id,
-        playerName: player.name,
         origin: 'LEILAO_V3',
-      });
+      };
+
+      dataStore.addFinanceRecord(livroCaixaEntry as any);
+
+      if (db) {
+        try {
+          const livroCaixaRef = doc(db, 'extratoFinanceiro', transferFinanceKey);
+          await setDoc(livroCaixaRef, sanitize(livroCaixaEntry), { merge: true });
+        } catch (e) {
+          console.warn('⚠️ [Leiloes] Falha ao persistir Livro Caixa no Firestore:', e);
+        }
+      }
 
       dataStore.addNews({
         id: `news-auction-${leilaoId}`,
