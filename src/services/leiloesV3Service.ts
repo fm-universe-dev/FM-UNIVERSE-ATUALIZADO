@@ -40,6 +40,7 @@ import { clubesService } from './clubesService';
 import { jogadoresService, normalizePlayerRecord, getSearchVariants } from './jogadoresService';
 import { transferenciasService } from './transferenciasService';
 import { notificacoesService } from './notificacoesService';
+import { noticiasService } from './noticiasService';
 import { isFreeAgentClub } from '../utils/clubUtils';
 import { fm2008DefinitivePlayers } from '../data/fm2008DefinitivePlayers';
 
@@ -1139,12 +1140,40 @@ export const leiloesV3Service = {
             });
             tx.set(novoLanceRef, lanceDocData);
 
-            return { lanceId: novoLanceRef.id };
+            return {
+              lanceId: novoLanceRef.id,
+              playerName: leilaoData.playerName,
+              playerId: leilaoData.playerId,
+              prevHighestBid: Number(leilaoData.highestBid) || 0,
+            };
           });
 
           // Atualiza também o cache local
           this._applyLocalLance(params.leilaoId, novoLance, targetClubDocId, valorLance);
           this._gerarNotificacaoNovoLance(params.leilaoId, targetClubDocId, valorLance, nowIso);
+
+          // Gera a notícia oficial do lance no feed do FM Universe
+          const club = dataStore.getClubById(targetClubDocId);
+          const leilaoTarget = getLocalLeiloes().find((l) => l.id === params.leilaoId);
+          const resolvedPlayerName = result.playerName || leilaoTarget?.playerName || 'Atleta';
+          const resolvedPlayerId = result.playerId || leilaoTarget?.playerId || params.leilaoId;
+          const isOutbid = Boolean((result.prevHighestBid && result.prevHighestBid > 0) || (params.highestBid && params.highestBid > 0));
+
+          noticiasService.gerarNoticiaLance({
+            leilaoId: params.leilaoId,
+            lanceId: result.lanceId,
+            clubId: targetClubDocId,
+            clubName: club?.name || params.managerName || 'Ninja FC',
+            managerId: auth.uid,
+            managerName: params.managerName,
+            playerId: resolvedPlayerId,
+            playerName: resolvedPlayerName,
+            valorLance,
+            isOutbid,
+            timestamp: nowIso,
+            temporada: '2026/2027',
+          });
+
           return { success: true, id: result.lanceId };
         } catch (txErr) {
           const msg = txErr instanceof Error ? txErr.message : String(txErr);
@@ -1163,6 +1192,24 @@ export const leiloesV3Service = {
       // Aplica o lance localmente (modo autônomo / Render)
       this._applyLocalLance(params.leilaoId, novoLance, targetClubDocId, valorLance);
       this._gerarNotificacaoNovoLance(params.leilaoId, targetClubDocId, valorLance, nowIso);
+
+      const clubFallback = dataStore.getClubById(targetClubDocId);
+      const leilaoTargetFallback = getLocalLeiloes().find((l) => l.id === params.leilaoId);
+      noticiasService.gerarNoticiaLance({
+        leilaoId: params.leilaoId,
+        lanceId: generatedLanceId,
+        clubId: targetClubDocId,
+        clubName: clubFallback?.name || params.managerName || 'Ninja FC',
+        managerId: auth.uid,
+        managerName: params.managerName,
+        playerId: leilaoTargetFallback?.playerId || params.leilaoId,
+        playerName: leilaoTargetFallback?.playerName || 'Atleta',
+        valorLance,
+        isOutbid: Boolean(params.highestBid && params.highestBid > 0),
+        timestamp: nowIso,
+        temporada: '2026/2027',
+      });
+
       return { success: true, id: generatedLanceId };
     } catch (err: unknown) {
       console.error('❌ [Leiloes] Erro ao registrar lance:', err);
@@ -1599,16 +1646,17 @@ export const leiloesV3Service = {
         }
       }
 
-      dataStore.addNews({
-        id: `news-auction-${leilaoId}`,
-        title: `${player.name} é o novo reforço do ${winnerClub.name}!`,
-        summary: `Leilão encerrado no valor de R$ ${winningFee.toLocaleString('pt-BR')}.`,
-        content: `O leilão de ${player.name} foi oficialmente encerrado e liquidado. O ${winnerClub.name} confirmou a aquisição definitiva pelo valor de R$ ${winningFee.toLocaleString('pt-BR')}. O jogador já está integrado ao plantel do clube.`,
-        category: 'TRANSFERENCIAS',
+      noticiasService.gerarNoticiaLeilaoEncerrado({
+        leilaoId,
         clubId: winnerClub.id,
-        date: todayDate,
-        author: 'Central de Leilões FM',
-        readTimeMinutes: 1,
+        clubName: winnerClub.name,
+        managerId: winnerManagerId,
+        managerName: winnerManagerName,
+        playerId: player.id,
+        playerName: player.name,
+        winningBid: winningFee,
+        timestamp: nowIso,
+        temporada: '2026/2027',
       });
 
       // 10. Atualizar Documento do Leilão Definitivamente (settled: true)

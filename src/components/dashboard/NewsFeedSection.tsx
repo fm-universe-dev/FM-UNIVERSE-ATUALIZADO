@@ -68,7 +68,7 @@ export const NewsFeedSection: React.FC<NewsFeedSectionProps> = ({ clubId, clubNa
     if (selectedCategory === 'MY_CLUB') {
       if (clubId && item.clubId !== clubId) return false;
     } else if (selectedCategory === 'TRANSFERS') {
-      if (item.category !== 'TRANSFERENCIAS' && !item.type?.includes('TRANSFER')) return false;
+      if (item.category !== 'TRANSFERENCIAS' && !item.type?.includes('TRANSFER') && !item.type?.includes('AUCTION')) return false;
     } else if (selectedCategory === 'MATCHES') {
       if (item.category !== 'COMPETICAO' && item.type !== 'MATCH_RESULT' && item.type !== 'OTHER_CLUB_EVENT')
         return false;
@@ -97,6 +97,13 @@ export const NewsFeedSection: React.FC<NewsFeedSectionProps> = ({ clubId, clubNa
   const unreadCount = news.filter((n) => !n.isRead).length;
 
   const getTypeBadge = (type?: string, category?: string) => {
+    if (type === 'AUCTION_BID' || type === 'AUCTION_OUTBID' || type === 'AUCTION_WON') {
+      return (
+        <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-amber-500/20 text-amber-300 border border-amber-500/40">
+          🔨 Leilão FM
+        </span>
+      );
+    }
     if (type === 'TRANSFER_PROPOSAL' || type === 'TRANSFER_COUNTER') {
       return (
         <span className="px-2 py-0.5 rounded text-[10px] font-bold bg-purple-500/15 text-purple-400 border border-purple-500/30">

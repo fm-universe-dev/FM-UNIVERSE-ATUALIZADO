@@ -260,7 +260,25 @@ class DataStore {
         this.transferOffers = [...mockTransferOffers];
         this.saveToStorage(STORAGE_KEYS.TRANSFER_OFFERS, this.transferOffers);
       }
-      this.news = this.loadFromStorage(STORAGE_KEYS.NEWS, mockNews);
+      this.news = this.loadFromStorage(STORAGE_KEYS.NEWS, []).filter((n) => {
+        const text = `${n.title || ''} ${n.summary || ''} ${n.content || ''} ${n.clubName || ''}`.toLowerCase();
+        return (
+          !text.includes('fm united') &&
+          !text.includes('inter tech') &&
+          !text.includes('real football') &&
+          !text.includes('porto real') &&
+          !text.includes('santos stars') &&
+          !text.includes('atlântico fc') &&
+          !text.includes('atlantico fc') &&
+          n.clubId !== 'club-1' &&
+          n.clubId !== 'club-2' &&
+          n.clubId !== 'club-3' &&
+          n.clubId !== 'club-4' &&
+          n.clubId !== 'club-5' &&
+          n.clubId !== 'club-6'
+        );
+      });
+      this.saveToStorage(STORAGE_KEYS.NEWS, this.news);
       this.notifications = this.loadFromStorage(STORAGE_KEYS.NOTIFICATIONS, mockNotifications);
       this.stadiums = this.loadFromStorage(STORAGE_KEYS.STADIUMS, mockStadiums);
       this.staff = this.loadFromStorage(STORAGE_KEYS.STAFF, mockStaff);
@@ -1028,7 +1046,7 @@ class DataStore {
     this.matches = [...mockMatches];
     this.transfers = [...mockTransfers];
     this.transferOffers = [...mockTransferOffers];
-    this.news = [...mockNews];
+    this.news = [];
     this.notifications = [...mockNotifications];
     this.stadiums = [...mockStadiums];
     this.staff = [...mockStaff];

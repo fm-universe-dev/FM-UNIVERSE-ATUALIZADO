@@ -637,6 +637,9 @@ export type NewsCategory =
 export type NewsPriority = 'BAIXA' | 'MEDIA' | 'ALTA' | 'URGENTE';
 
 export type NewsEventType =
+  | 'AUCTION_BID'
+  | 'AUCTION_OUTBID'
+  | 'AUCTION_WON'
   | 'TRANSFER_PROPOSAL'
   | 'TRANSFER_COUNTER'
   | 'TRANSFER_COMPLETED'
@@ -670,6 +673,14 @@ export interface News {
   isRead?: boolean;
   sourceEventId?: string;
   metadata?: Record<string, any>;
+  managerId?: string;
+  managerName?: string;
+  playerId?: string;
+  playerName?: string;
+  leilaoId?: string;
+  lanceId?: string;
+  valor?: number;
+  temporada?: string;
 }
 
 export interface NotificationItem {

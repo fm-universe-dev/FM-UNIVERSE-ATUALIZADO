@@ -2076,44 +2076,7 @@ export const mockTransferOffers: TransferOffer[] = [
   },
 ];
 
-export const mockNews: News[] = [
-  {
-    id: 'news-1',
-    title: 'FM United assume a liderança isolada após goleada convincente',
-    summary: 'Comandada pelo brilho de Kaiky Gol e Thiaguinho, a equipe do treinador Alex Carvalho dominou a rodada 4 e chega aos 10 pontos na Liga FM Universe.',
-    content: 'O FM United segue em lua de mel com sua torcida. Jogando fora de casa, a equipe impôs seu ritmo desde os minutos iniciais e construiu um placar seguro de 4 a 1 sobre o Atlântico FC. O treinador destacou na coletiva de imprensa o comprometimento tático e a solidez do meio-campo.',
-    category: 'COMPETICAO',
-    clubId: 'club-1',
-    date: 'Hoje, 09:30',
-    author: 'Redação FM Universe',
-    imageUrl: 'https://images.unsplash.com/photo-1574629810360-7efbbe195018?auto=format&fit=crop&w=800&q=80',
-    readTimeMinutes: 3,
-  },
-  {
-    id: 'news-2',
-    title: 'Janela de transferências esquenta com propostas milionárias',
-    summary: 'Clubes intensificam contatos de última hora. Real Football sondou o prodígio Thiaguinho do FM United, mas a diretoria promete segurar o atleta.',
-    content: 'As conversas nos bastidores indicam que o Real Football estaria disposto a oferecer cifras recordes para reforçar sua armação. No entanto, Alex Carvalho foi enfático: "Nenhum pilar da nossa equipe sairá no meio do nosso projeto de título".',
-    category: 'TRANSFERENCIAS',
-    clubId: 'club-2',
-    date: 'Ontem, 18:45',
-    author: 'Guilherme Siqueira',
-    imageUrl: 'https://images.unsplash.com/photo-1517466787929-bc90951d0974?auto=format&fit=crop&w=800&q=80',
-    readTimeMinutes: 4,
-  },
-  {
-    id: 'news-3',
-    title: 'Análise tática: Por que o 4-3-3 moderno do FM United sufoca adversários',
-    summary: 'Uma dissecação profunda da dinâmica entre os meias centrais e a transição rápida dos pontas que transformou o time na sensação da temporada.',
-    content: 'A ocupação do meio-campo através de Casares como primeiro volante e a liberdade de criação concedida a Bruno Viana cria superioridade numérica permanente nas entrelinhas...',
-    category: 'BASTIDORES',
-    clubId: 'club-1',
-    date: '01 Set 2025',
-    author: 'Prof. Tático',
-    imageUrl: 'https://images.unsplash.com/photo-1508098682722-e99c43a406b2?auto=format&fit=crop&w=800&q=80',
-    readTimeMinutes: 5,
-  },
-];
+export const mockNews: News[] = [];
 
 export const mockNotifications: NotificationItem[] = [
   {

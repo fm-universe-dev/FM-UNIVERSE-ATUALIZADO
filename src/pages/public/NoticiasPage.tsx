@@ -12,11 +12,27 @@ export const NoticiasPage: React.FC = () => {
     noticiasService.getAll().then(setNews);
   }, []);
 
-  const categories = ['ALL', 'LIGA', 'MERCADO', 'BASTIDORES', 'TÁTICA'];
+  const categories = [
+    { key: 'ALL', label: 'Todas' },
+    { key: 'TRANSFERENCIAS', label: 'Mercado & Leilões' },
+    { key: 'COMPETICAO', label: 'Liga & Jogos' },
+    { key: 'ESTADIO', label: 'Estádio & Finanças' },
+    { key: 'BASTIDORES', label: 'Bastidores' },
+  ];
 
-  const filtered = news.filter((n) =>
-    selectedCategory === 'ALL' ? true : n.category.toUpperCase() === selectedCategory
-  );
+  const filtered = news.filter((n) => {
+    if (selectedCategory === 'ALL') return true;
+    if (selectedCategory === 'TRANSFERENCIAS') {
+      return n.category === 'TRANSFERENCIAS' || n.type?.includes('TRANSFER') || n.type?.includes('AUCTION');
+    }
+    if (selectedCategory === 'COMPETICAO') {
+      return n.category === 'COMPETICAO' || n.type === 'MATCH_RESULT' || n.type === 'STANDINGS_CHANGE';
+    }
+    if (selectedCategory === 'ESTADIO') {
+      return n.category === 'ESTADIO' || n.category === 'FINANCAS' || n.type === 'STADIUM_UPGRADE';
+    }
+    return n.category?.toUpperCase() === selectedCategory;
+  });
 
   return (
     <div className="space-y-6">
@@ -27,7 +43,7 @@ export const NoticiasPage: React.FC = () => {
             <span>Noticiário do FM Universe</span>
           </h1>
           <p className="text-sm text-slate-400 mt-1">
-            Cobertura diária de jogos, declarações de treinadores e bastidores do mercado.
+            Cobertura diária de jogos, leilões, declarações de treinadores e bastidores do mercado.
           </p>
         </div>
 
@@ -35,15 +51,15 @@ export const NoticiasPage: React.FC = () => {
         <div className="flex items-center gap-1.5 bg-slate-900 p-1 rounded-xl border border-slate-800 overflow-x-auto self-start">
           {categories.map((cat) => (
             <button
-              key={cat}
-              onClick={() => setSelectedCategory(cat)}
+              key={cat.key}
+              onClick={() => setSelectedCategory(cat.key)}
               className={`px-3 py-1.5 rounded-lg text-xs font-semibold whitespace-nowrap transition-all ${
-                selectedCategory === cat
+                selectedCategory === cat.key
                   ? 'bg-emerald-500 text-slate-950 font-bold shadow'
                   : 'text-slate-400 hover:text-white'
               }`}
             >
-              {cat === 'ALL' ? 'Todas' : cat}
+              {cat.label}
             </button>
           ))}
         </div>
