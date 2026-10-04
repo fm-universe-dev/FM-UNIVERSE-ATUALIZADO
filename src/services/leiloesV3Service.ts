@@ -39,6 +39,7 @@ import { dataStore } from './dataStore';
 import { clubesService } from './clubesService';
 import { jogadoresService, normalizePlayerRecord, getSearchVariants } from './jogadoresService';
 import { transferenciasService } from './transferenciasService';
+import { notificacoesService } from './notificacoesService';
 import { isFreeAgentClub } from '../utils/clubUtils';
 import { fm2008DefinitivePlayers } from '../data/fm2008DefinitivePlayers';
 
@@ -1143,6 +1144,7 @@ export const leiloesV3Service = {
 
           // Atualiza também o cache local
           this._applyLocalLance(params.leilaoId, novoLance, targetClubDocId, valorLance);
+          this._gerarNotificacaoNovoLance(params.leilaoId, targetClubDocId, valorLance, nowIso);
           return { success: true, id: result.lanceId };
         } catch (txErr) {
           const msg = txErr instanceof Error ? txErr.message : String(txErr);
@@ -1160,6 +1162,7 @@ export const leiloesV3Service = {
 
       // Aplica o lance localmente (modo autônomo / Render)
       this._applyLocalLance(params.leilaoId, novoLance, targetClubDocId, valorLance);
+      this._gerarNotificacaoNovoLance(params.leilaoId, targetClubDocId, valorLance, nowIso);
       return { success: true, id: generatedLanceId };
     } catch (err: unknown) {
       console.error('❌ [Leiloes] Erro ao registrar lance:', err);
@@ -1200,6 +1203,44 @@ export const leiloesV3Service = {
         ...club,
         reservedTransferBudget: currentRes + valorLance,
       });
+    }
+  },
+
+  /**
+   * Dispara notificação global de novo lance para todos os managers,
+   * permitindo abrir diretamente o leilão correspondente para cobrir o lance.
+   */
+  async _gerarNotificacaoNovoLance(
+    leilaoId: string,
+    clubId: string,
+    valorLance: number,
+    timestampIso?: string
+  ): Promise<void> {
+    try {
+      const leilao = getLocalLeiloes().find((l) => l.id === leilaoId);
+      const playerName = leilao?.playerName || 'Atleta';
+      const club = dataStore.getClubById(clubId);
+      const clubName = club?.name || clubId;
+      const valorFormatado = `R$ ${valorLance.toLocaleString('pt-BR')}`;
+
+      const dateObj = timestampIso ? new Date(timestampIso) : new Date();
+      const horario = dateObj.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
+      const dataFormatada = `${dateObj.toLocaleDateString('pt-BR')} às ${horario}`;
+
+      const titulo = '🔔 NOVO LANCE NO LEILÃO';
+      const mensagem = `Jogador: ${playerName}\nClube que deu o lance: ${clubName}\nValor: ${valorFormatado}\nHorário: ${horario}\nStatus: Leilão aberto`;
+
+      await notificacoesService.create({
+        title: titulo,
+        message: mensagem,
+        type: 'AUCTION_BID',
+        date: dataFormatada,
+        read: false,
+        link: '/manager/leiloes-v3',
+        leilaoId,
+      });
+    } catch (notifErr) {
+      console.warn('⚠️ [Leiloes] Falha ao despachar notificação de novo lance:', notifErr);
     }
   },
 

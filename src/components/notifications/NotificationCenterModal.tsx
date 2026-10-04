@@ -14,6 +14,7 @@ import {
   AlertCircle,
   ArrowRightLeft,
   Calendar,
+  Gavel,
 } from 'lucide-react';
 
 interface NotificationCenterModalProps {
@@ -42,7 +43,10 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
     if (filter === 'UNREAD') return !n.read;
     if (filter === 'TRANSFERS') {
       return (
+        n.type === 'AUCTION_BID' ||
         n.type.includes('TRANSFER') ||
+        n.title.toLowerCase().includes('leilão') ||
+        n.title.toLowerCase().includes('lance') ||
         n.title.toLowerCase().includes('proposta') ||
         n.title.toLowerCase().includes('transferência')
       );
@@ -74,6 +78,8 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
 
   const getIcon = (type: string) => {
     switch (type) {
+      case 'AUCTION_BID':
+        return <Gavel className="w-4 h-4 text-amber-400" />;
       case 'SUCCESS':
         return <CheckCircle className="w-4 h-4 text-emerald-400" />;
       case 'WARNING':
@@ -94,7 +100,14 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
       await notificacoesService.markAsRead(notif.id);
       onRefresh();
     }
-    if (notif.link) {
+    if (notif.leilaoId || notif.link?.includes('leilao')) {
+      if (notif.leilaoId && typeof window !== 'undefined') {
+        sessionStorage.setItem('fmu_target_leilao_id', notif.leilaoId);
+        window.dispatchEvent(new CustomEvent('fmu_open_auction'));
+      }
+      navigate(notif.link || '/manager/leiloes-v3');
+      onClose();
+    } else if (notif.link) {
       navigate(notif.link);
       onClose();
     } else if (notif.offerId || notif.type.includes('TRANSFER')) {
@@ -231,7 +244,7 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
                       {notif.date || 'Hoje'}
                     </span>
                   </div>
-                  <p className="text-xs text-zinc-400 leading-relaxed line-clamp-2">
+                  <p className="text-xs text-zinc-300 leading-relaxed whitespace-pre-line">
                     {notif.message}
                   </p>
 
@@ -242,10 +255,17 @@ export const NotificationCenterModal: React.FC<NotificationCenterModalProps> = (
                         Não lida
                       </span>
                     )}
-                    <span className="text-zinc-500 group-hover:text-zinc-300 transition-colors flex items-center gap-1">
-                      <span>Clique para ver detalhes</span>
-                      <ExternalLink className="w-3 h-3" />
-                    </span>
+                    {notif.leilaoId || notif.type === 'AUCTION_BID' ? (
+                      <span className="text-amber-400 font-bold group-hover:text-amber-300 transition-colors flex items-center gap-1.5 bg-amber-500/10 px-2.5 py-0.5 rounded border border-amber-500/30">
+                        <Gavel className="w-3 h-3" />
+                        <span>Ver leilão</span>
+                      </span>
+                    ) : (
+                      <span className="text-zinc-500 group-hover:text-zinc-300 transition-colors flex items-center gap-1">
+                        <span>Clique para ver detalhes</span>
+                        <ExternalLink className="w-3 h-3" />
+                      </span>
+                    )}
                   </div>
                 </div>
 

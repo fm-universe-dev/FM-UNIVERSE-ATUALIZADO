@@ -426,17 +426,49 @@ export const DashboardLayout: React.FC<{ children: React.ReactNode }> = ({ child
                       notifications.map((n) => (
                         <div
                           key={n.id}
-                          className={`p-2 rounded-lg border ${
+                          onClick={() => {
+                            if (!n.read) {
+                              notificacoesService.markAsRead(n.id);
+                              setNotifications((prev) =>
+                                prev.map((item) => (item.id === n.id ? { ...item, read: true } : item))
+                              );
+                            }
+                            if (n.leilaoId || n.link?.includes('leilao')) {
+                              if (n.leilaoId && typeof window !== 'undefined') {
+                                sessionStorage.setItem('fmu_target_leilao_id', n.leilaoId);
+                                window.dispatchEvent(new CustomEvent('fmu_open_auction'));
+                              }
+                              navigate(n.link || '/manager/leiloes-v3');
+                              setNotifDropdownOpen(false);
+                            } else if (n.link) {
+                              navigate(n.link);
+                              setNotifDropdownOpen(false);
+                            }
+                          }}
+                          className={`p-2 rounded-lg border transition-colors cursor-pointer ${
                             n.read
-                              ? 'bg-zinc-900/50 border-zinc-800/60 text-zinc-400'
-                              : 'bg-zinc-800/70 border-zinc-700 text-zinc-200'
+                              ? 'bg-zinc-900/50 hover:bg-zinc-900 border-zinc-800/60 text-zinc-400'
+                              : 'bg-zinc-800/70 hover:bg-zinc-800 border-zinc-700 text-zinc-200'
                           }`}
                         >
                           <div className="flex justify-between font-semibold text-white mb-0.5">
-                            <span>{n.title}</span>
-                            <span className="text-[10px] text-zinc-500">{n.date}</span>
+                            <span className="flex items-center gap-1.5 truncate">
+                              {(n.leilaoId || n.type === 'AUCTION_BID') && (
+                                <Gavel className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                              )}
+                              <span>{n.title}</span>
+                            </span>
+                            <span className="text-[10px] text-zinc-500 shrink-0 ml-1">{n.date}</span>
                           </div>
-                          <p className="text-[11px] text-zinc-300">{n.message}</p>
+                          <p className="text-[11px] text-zinc-300 whitespace-pre-line">{n.message}</p>
+                          {(n.leilaoId || n.type === 'AUCTION_BID') && (
+                            <div className="mt-1.5 flex justify-end">
+                              <span className="text-[10px] text-amber-400 font-bold flex items-center gap-1 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">
+                                <Gavel className="w-3 h-3" />
+                                <span>Ver leilão</span>
+                              </span>
+                            </div>
+                          )}
                         </div>
                       ))
                     )}

@@ -48,6 +48,31 @@ export const ManagerLeiloesV3Page: React.FC = () => {
     return () => unsub();
   }, []);
 
+  // Auto-abertura de leilão quando o manager clica em "Ver leilão" em uma notificação
+  useEffect(() => {
+    const checkTargetAuction = () => {
+      if (leiloes.length === 0) return;
+      const targetId = typeof window !== 'undefined' ? sessionStorage.getItem('fmu_target_leilao_id') : null;
+      if (targetId) {
+        const found = leiloes.find((l) => l.id === targetId);
+        if (found) {
+          setLeilaoAtivo(found);
+          setFeedback(null);
+          const minIncrement = Number(found.minIncrement) || 100000;
+          const highestBid = Number(found.highestBid) || 0;
+          const initialBid = Number(found.initialBid) || 0;
+          const proximoValor = highestBid > 0 ? highestBid + minIncrement : initialBid;
+          setValorLance(proximoValor);
+          sessionStorage.removeItem('fmu_target_leilao_id');
+        }
+      }
+    };
+
+    checkTargetAuction();
+    window.addEventListener('fmu_open_auction', checkTargetAuction);
+    return () => window.removeEventListener('fmu_open_auction', checkTargetAuction);
+  }, [leiloes]);
+
   // Atualização pontual manual acionada pelo botão "Atualizar"
   const carregarLeiloes = async (isManualRefresh = false) => {
     if (isManualRefresh) {

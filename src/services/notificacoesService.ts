@@ -30,8 +30,12 @@ export const notificacoesService = {
       list = dataStore.getNotifications();
     }
 
-    // Sort by date desc
-    list.sort((a, b) => new Date(b.date || 0).getTime() - new Date(a.date || 0).getTime());
+    // Sort by date / createdAt desc
+    list.sort((a, b) => {
+      const timeA = new Date(a.createdAt || a.date || 0).getTime();
+      const timeB = new Date(b.createdAt || b.date || 0).getTime();
+      return (isNaN(timeB) ? 0 : timeB) - (isNaN(timeA) ? 0 : timeA);
+    });
 
     if (clubId) {
       return list.filter((n) => !n.clubId || n.clubId === clubId);
@@ -66,6 +70,7 @@ export const notificacoesService = {
       offerId: data.offerId,
       clubId: data.clubId,
       userId: data.userId,
+      leilaoId: data.leilaoId,
       createdAt: new Date().toISOString(),
     };
     await this.add(newNotif);

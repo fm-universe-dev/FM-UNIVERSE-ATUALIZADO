@@ -670,13 +670,14 @@ export interface NotificationItem {
   id: string;
   title: string;
   message: string;
-  type: 'INFO' | 'SUCCESS' | 'WARNING' | 'ALERT' | 'TRANSFER_OFFER_RECEIVED' | 'TRANSFER_OFFER_ACCEPTED' | 'TRANSFER_OFFER_REJECTED';
+  type: 'INFO' | 'SUCCESS' | 'WARNING' | 'ALERT' | 'TRANSFER_OFFER_RECEIVED' | 'TRANSFER_OFFER_ACCEPTED' | 'TRANSFER_OFFER_REJECTED' | 'AUCTION_BID';
   date: string;
   read: boolean;
   link?: string;
   offerId?: string;
   clubId?: string;
   userId?: string;
+  leilaoId?: string;
   createdAt?: string;
 }
 
