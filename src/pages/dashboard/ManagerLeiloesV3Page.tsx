@@ -5,12 +5,13 @@ import {
   Clock,
   AlertCircle,
   CheckCircle2,
-  Eye,
   RefreshCw,
   Trophy,
   History,
   User,
   Search,
+  TrendingUp,
+  Sparkles,
 } from 'lucide-react';
 import { doc, getDoc, onSnapshot } from 'firebase/firestore';
 import { getFirestoreDb, firestoreDb } from '../../config/firebase';
@@ -18,13 +19,31 @@ import { Club } from '../../types';
 import { leiloesV3Service } from '../../services/leiloesV3Service';
 import { Leilao, Lance } from '../../types/leiloesV3';
 import { useAuth } from '../../contexts/AuthContext';
+import { formatCurrencyBRL } from '../../utils/currency';
+
+interface MeuLanceItem {
+  leilao: Leilao;
+  meuUltimoLance: Lance;
+  lanceAtual: number;
+  liderNome: string;
+  liderClube: string | null;
+  isLider: boolean;
+  statusDisputa: 'LIDERANDO' | 'SUPERADO' | 'AGUARDANDO';
+  quantidadeConcorrentes: number;
+}
 
 export const ManagerLeiloesV3Page: React.FC = () => {
   const { firebaseUser, user, managerProfile, managedClub, refreshClubData, refreshManagerProfile } = useAuth();
 
+  // Identificação canônica do Manager logado e seu clube
+  const currentManagerUid = firebaseUser?.uid || user?.id || managerProfile?.uid;
+  const currentManagerName = managerProfile?.name || user?.name || firebaseUser?.displayName || 'Treinador';
+
   // Estado local do clube com sincronização em tempo real do Firestore (/clubes/{clubId})
   const [clubeAtualizado, setClubeAtualizado] = useState<Club | null>(null);
   const clubeExibido = clubeAtualizado || managedClub;
+  const currentClubId = clubeExibido?.id;
+  const currentClubName = clubeExibido?.name;
 
   // Sincroniza estado inicial com managedClub
   useEffect(() => {
@@ -66,7 +85,6 @@ export const ManagerLeiloesV3Page: React.FC = () => {
   }, [managedClub, managerProfile?.clubId, user?.managedClubId]);
 
   // Listener em tempo real direto do documento /clubes/{clubId} no Firestore
-  // Garante que a interface reflita reservedTransferBudget imediatamente após lances
   useEffect(() => {
     const clubId = managedClub?.id || managerProfile?.clubId || user?.managedClubId;
     if (!clubId || clubId === 'sem-clube') return;
@@ -114,8 +132,18 @@ export const ManagerLeiloesV3Page: React.FC = () => {
   const [submitting, setSubmitting] = useState(false);
   const [feedback, setFeedback] = useState<{ type: 'success' | 'error'; message: string } | null>(null);
 
+  // Mapa de lances por leilão para a seção "MEUS LANCES"
+  const [lancesPorLeilao, setLancesPorLeilao] = useState<Record<string, Lance[]>>({});
+  const [filtroMeusLances, setFiltroMeusLances] = useState<'TODOS' | 'LIDERANDO' | 'SUPERADOS'>('TODOS');
+
+  // Contador de tempo regressivo em tempo real (1 segundo)
+  const [, setClockTick] = useState(Date.now());
+  useEffect(() => {
+    const interval = setInterval(() => setClockTick(Date.now()), 1000);
+    return () => clearInterval(interval);
+  }, []);
+
   // Listener em tempo real dos leilões (/leiloes) do Firestore
-  // Garante sincronização automática para todos os Managers sem precisar recarregar a página
   useEffect(() => {
     setLoading(true);
     setQuotaError(null);
@@ -152,6 +180,53 @@ export const ManagerLeiloesV3Page: React.FC = () => {
     return () => window.removeEventListener('fmu_open_auction', checkTargetAuction);
   }, [leiloes]);
 
+  // Sincronização oficial de lances para a seção "MEUS LANCES"
+  // Consulta apenas as subcoleções /leiloes/{leilaoId}/lances necessárias para o Manager logado
+  useEffect(() => {
+    if (!currentManagerUid || leiloes.length === 0) return;
+
+    const unsubs: Array<() => void> = [];
+    const leiloesDisputadosIdsLocal = leiloesV3Service.getLeiloesDisputadosIds(currentManagerUid);
+    const leiloesDisputadosSet = new Set(leiloesDisputadosIdsLocal);
+
+    leiloes.forEach((l) => {
+      const isLiderDireto =
+        l.highestBidder === currentManagerName ||
+        (Boolean(currentClubName) && l.highestBidderClub === currentClubName) ||
+        (l as any).highestBidderId === currentManagerUid;
+
+      let temLanceLocal = false;
+      try {
+        const stored = localStorage.getItem(`fmu_lances_v3_${l.id}`);
+        if (stored) {
+          const parsed = JSON.parse(stored);
+          if (
+            Array.isArray(parsed) &&
+            parsed.some(
+              (lance: Lance) =>
+                lance.managerId === currentManagerUid || (Boolean(currentClubId) && lance.clubId === currentClubId)
+            )
+          ) {
+            temLanceLocal = true;
+          }
+        }
+      } catch {
+        // ignore
+      }
+
+      if (leiloesDisputadosSet.has(l.id) || isLiderDireto || temLanceLocal) {
+        const unsub = leiloesV3Service.escutarLances(l.id, (lances) => {
+          setLancesPorLeilao((prev) => ({ ...prev, [l.id]: lances }));
+        });
+        unsubs.push(unsub);
+      }
+    });
+
+    return () => {
+      unsubs.forEach((u) => u());
+    };
+  }, [leiloes, currentManagerUid, currentManagerName, currentClubId, currentClubName]);
+
   // Atualização pontual manual acionada pelo botão "Atualizar"
   const carregarLeiloes = async (isManualRefresh = false) => {
     if (isManualRefresh) {
@@ -180,8 +255,7 @@ export const ManagerLeiloesV3Page: React.FC = () => {
     setRefreshing(false);
   };
 
-  // Filtros derivados: leilões com status de disputa aberto (ABERTO / OPEN / ATIVO / EM_ANDAMENTO)
-  // Visíveis publicamente para todos os Managers autenticados, independentemente do clube ou computador
+  // Filtros derivados: leilões com status de disputa aberto
   const leiloesAbertos = useMemo(() => {
     return leiloes.filter((l) => {
       const statusNorm = String(l.status || 'ABERTO').trim().toUpperCase();
@@ -194,10 +268,7 @@ export const ManagerLeiloesV3Page: React.FC = () => {
     });
   }, [leiloes]);
 
-  // Lista de leilões abertos com pesquisa por nome/sobrenome em tempo real e ordenação automática:
-  // 1. OVR do maior para o menor (principal critério)
-  // 2. Em caso de empate no OVR, Valor de Mercado do maior para o menor
-  // 3. Em caso de empate nos dois critérios, Nome em ordem alfabética (A-Z)
+  // Lista de leilões abertos com pesquisa por nome/sobrenome em tempo real e ordenação automática
   const leiloesAbertosExibidos = useMemo(() => {
     let lista = leiloesAbertos;
 
@@ -258,7 +329,6 @@ export const ManagerLeiloesV3Page: React.FC = () => {
       if (statusNorm === 'ENCERRADO' || statusNorm === 'CLOSED' || statusNorm === 'FINALIZADO') {
         return true;
       }
-      // Se era para estar aberto mas a data de encerramento já expirou
       if (l.endTime) {
         const endMs = new Date(l.endTime).getTime();
         if (!isNaN(endMs) && endMs <= now) {
@@ -269,7 +339,113 @@ export const ManagerLeiloesV3Page: React.FC = () => {
     });
   }, [leiloes]);
 
-  // Escuta lances do leilão em foco
+  // ============================================================
+  // CÁLCULO OFICIAL: MEUS LANCES (Itens 1, 2, 3, 4, 5, 6 e 7)
+  // ============================================================
+  const meusLancesItems = useMemo<MeuLanceItem[]>(() => {
+    if (!currentManagerUid) return [];
+
+    const items: MeuLanceItem[] = [];
+
+    for (const leilao of leiloes) {
+      const lances = lancesPorLeilao[leilao.id] || [];
+
+      // Filtra lances do Manager autenticado (por UID ou pelo Clube)
+      const lancesDoManager = lances.filter(
+        (l) => l.managerId === currentManagerUid || (Boolean(currentClubId) && l.clubId === currentClubId)
+      );
+
+      // Também verifica se o leilão já registra o manager como highestBidder
+      const isLiderDireto =
+        leilao.highestBidder === currentManagerName ||
+        (Boolean(currentClubName) && leilao.highestBidderClub === currentClubName) ||
+        (leilao as any).highestBidderId === currentManagerUid;
+
+      // Se o manager nunca deu lance neste leilão, pula
+      if (lancesDoManager.length === 0 && !isLiderDireto) {
+        continue;
+      }
+
+      // Ordena lances por valor decrescente
+      const sortedAllLances = [...lances].sort((a, b) => (Number(b.value) || 0) - (Number(a.value) || 0));
+      const sortedMyBids = [...lancesDoManager].sort((a, b) => (Number(b.value) || 0) - (Number(a.value) || 0));
+
+      const meuUltimoLance: Lance = sortedMyBids[0] || {
+        id: `meu-lance-${leilao.id}`,
+        leilaoId: leilao.id,
+        managerId: currentManagerUid,
+        managerName: currentManagerName,
+        clubId: currentClubId || 'sem-clube',
+        value: Number(leilao.highestBid || leilao.initialBid),
+        createdAt: leilao.updatedAt || leilao.createdAt,
+      };
+
+      const topBid = sortedAllLances[0];
+      const lanceAtual = topBid ? Number(topBid.value) : Number(leilao.highestBid || leilao.initialBid);
+
+      const isLider = topBid
+        ? (topBid.managerId === currentManagerUid || (Boolean(currentClubId) && topBid.clubId === currentClubId))
+        : isLiderDireto;
+
+      let statusDisputa: 'LIDERANDO' | 'SUPERADO' | 'AGUARDANDO' = 'AGUARDANDO';
+      if (isLider) {
+        statusDisputa = 'LIDERANDO';
+      } else if (lanceAtual > meuUltimoLance.value) {
+        statusDisputa = 'SUPERADO';
+      } else {
+        statusDisputa = 'AGUARDANDO';
+      }
+
+      // Quantidade de concorrentes distintos que deram lances
+      const uniqueParticipants = new Set(
+        sortedAllLances.map((l) => l.managerName || l.managerId || l.clubId).filter(Boolean)
+      );
+      const quantidadeConcorrentes = Math.max(1, uniqueParticipants.size);
+
+      const liderNome = topBid ? topBid.managerName : leilao.highestBidder || 'Outro Treinador';
+      const liderClube = topBid ? topBid.clubId : leilao.highestBidderClub || null;
+
+      items.push({
+        leilao,
+        meuUltimoLance,
+        lanceAtual,
+        liderNome,
+        liderClube,
+        isLider,
+        statusDisputa,
+        quantidadeConcorrentes,
+      });
+    }
+
+    // Ordenação: primeiro lances SUPERADOS (alerta ao Manager), depois LIDERANDO, depois AGUARDANDO
+    items.sort((a, b) => {
+      if (a.statusDisputa === 'SUPERADO' && b.statusDisputa !== 'SUPERADO') return -1;
+      if (b.statusDisputa === 'SUPERADO' && a.statusDisputa !== 'SUPERADO') return 1;
+      const endA = a.leilao.endTime ? new Date(a.leilao.endTime).getTime() : 0;
+      const endB = b.leilao.endTime ? new Date(b.leilao.endTime).getTime() : 0;
+      return endA - endB;
+    });
+
+    return items;
+  }, [leiloes, lancesPorLeilao, currentManagerUid, currentManagerName, currentClubId, currentClubName]);
+
+  // Contagens para os cards de resumo no topo
+  const totalMeusLances = meusLancesItems.length;
+  const totalLiderando = meusLancesItems.filter((i) => i.statusDisputa === 'LIDERANDO').length;
+  const totalSuperados = meusLancesItems.filter((i) => i.statusDisputa === 'SUPERADO').length;
+
+  // Filtro de Meus Lances (TODOS, LIDERANDO, SUPERADOS)
+  const meusLancesExibidos = useMemo(() => {
+    if (filtroMeusLances === 'LIDERANDO') {
+      return meusLancesItems.filter((i) => i.statusDisputa === 'LIDERANDO');
+    }
+    if (filtroMeusLances === 'SUPERADOS') {
+      return meusLancesItems.filter((i) => i.statusDisputa === 'SUPERADO');
+    }
+    return meusLancesItems;
+  }, [meusLancesItems, filtroMeusLances]);
+
+  // Escuta lances do leilão em foco no modal
   useEffect(() => {
     if (!leilaoAtivo) {
       setLancesModal([]);
@@ -286,11 +462,10 @@ export const ManagerLeiloesV3Page: React.FC = () => {
     setLeilaoAtivo(l);
     setFeedback(null);
     setValorLance(Number(l.initialBid));
-    // Força leitura fresca do Firestore para garantir reserva atualizada imediatamente
     recarregarClubeFirestore();
   };
 
-  // Submissão de lance: UMA ÚNICA gravação em /leiloes/{leilaoId}/lances
+  // Submissão de lance: UMA ÚNICA gravação oficial em /leiloes/{leilaoId}/lances
   const handleSubmeterLance = async (e: React.FormEvent) => {
     e.preventDefault();
     if (!leilaoAtivo) return;
@@ -317,7 +492,7 @@ export const ManagerLeiloesV3Page: React.FC = () => {
     const res = await leiloesV3Service.darLance({
       leilaoId: leilaoAtivo.id,
       managerId: currentUid,
-      managerName: managerProfile?.name || user?.name || firebaseUser?.displayName || 'Treinador',
+      managerName: currentManagerName,
       clubId: clubeExibido?.id || 'sem-clube',
       value: valorLance,
       initialBid: Number(leilaoAtivo.initialBid) || 0,
@@ -334,9 +509,10 @@ export const ManagerLeiloesV3Page: React.FC = () => {
     if (res.success && res.id) {
       setFeedback({
         type: 'success',
-        message: `Lance de R$ ${valorLance.toLocaleString('pt-BR')} registrado com sucesso em /leiloes/${leilaoAtivo.id}/lances/${res.id}!`,
+        message: `Lance de R$ ${valorLance.toLocaleString('pt-BR')} registrado com sucesso!`,
       });
-      // Releitura do documento real do Firestore após lance confirmado
+      // Registra instantaneamente o leilão disputado
+      leiloesV3Service.registrarLeilaoDisputado(currentUid, leilaoAtivo.id);
       await recarregarClubeFirestore();
       refreshClubData?.();
       refreshManagerProfile?.();
@@ -348,9 +524,38 @@ export const ManagerLeiloesV3Page: React.FC = () => {
     }
   };
 
+  // Helper para formatar tempo restante de forma amigável
+  const formatRemainingTime = (endTimeStr?: string): string => {
+    if (!endTimeStr) return 'Em andamento';
+    const endMs = new Date(endTimeStr).getTime();
+    if (isNaN(endMs)) return 'Em andamento';
+    const diff = endMs - Date.now();
+    if (diff <= 0) return 'Encerrado';
+    const hours = Math.floor(diff / (1000 * 60 * 60));
+    const mins = Math.floor((diff % (1000 * 60 * 60)) / (1000 * 60));
+    const secs = Math.floor((diff % (1000 * 60)) / 1000);
+    if (hours >= 24) {
+      const days = Math.floor(hours / 24);
+      const remHours = hours % 24;
+      return `${days}d ${remHours}h restantes`;
+    }
+    return `${String(hours).padStart(2, '0')}h ${String(mins).padStart(2, '0')}m ${String(secs).padStart(2, '0')}s`;
+  };
+
+  const isFM2008Player = (l: Leilao) =>
+    Boolean(
+      l.playerId?.startsWith('fm2008_') ||
+      l.playerClub === 'Manchester United' ||
+      l.playerClub === 'Man Utd' ||
+      l.playerClub === 'Barcelona' ||
+      l.playerClub === 'Inter' ||
+      l.playerClub === 'Milan' ||
+      (l as any).isFM2008
+    );
+
   return (
     <div className="p-6 max-w-7xl mx-auto space-y-6">
-      {/* Header */}
+      {/* Header da Mesa de Leilões */}
       <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 text-white shadow-xl flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div className="flex items-center gap-3">
           <div className="p-3 bg-amber-500/10 border border-amber-500/20 rounded-xl text-amber-400">
@@ -391,7 +596,285 @@ export const ManagerLeiloesV3Page: React.FC = () => {
         </div>
       )}
 
-      {/* 1. SEÇÃO: LEILÕES ABERTOS */}
+      {/* ============================================================ */}
+      {/* 1. NOVA SEÇÃO VISUAL: MEUS LANCES (ACOMPANHAMENTO DE DISPUTAS) */}
+      {/* ============================================================ */}
+      <section className="bg-slate-900 border border-purple-900/40 rounded-2xl overflow-hidden shadow-2xl relative">
+        {/* Ambient glow roxo FM Universe */}
+        <div className="absolute top-0 right-0 w-96 h-48 bg-purple-600/10 rounded-full blur-3xl pointer-events-none" />
+
+        {/* Topo da Seção com Título e Cards de Resumo */}
+        <div className="p-5 sm:p-6 border-b border-slate-800 flex flex-col lg:flex-row lg:items-center justify-between gap-5 relative z-10">
+          <div>
+            <div className="flex items-center gap-2.5">
+              <div className="p-2 bg-purple-600/20 border border-purple-500/30 rounded-xl text-purple-400">
+                <TrendingUp className="w-5 h-5" />
+              </div>
+              <h2 className="text-xl font-black text-white uppercase tracking-tight flex items-center gap-2">
+                <span>MEUS LANCES</span>
+                <span className="text-xs px-2.5 py-0.5 rounded-full bg-purple-600/20 text-purple-300 border border-purple-500/30 font-mono font-bold">
+                  {totalMeusLances}
+                </span>
+              </h2>
+            </div>
+            <p className="text-xs text-slate-400 mt-1">
+              Acompanhe todos os jogadores pelos quais você está disputando no momento.
+            </p>
+          </div>
+
+          {/* 5. RESUMO NO TOPO (MEUS LANCES, LIDERANDO, SUPERADOS) */}
+          <div className="grid grid-cols-3 gap-2.5 sm:gap-3 w-full lg:w-auto">
+            {/* Card: Meus Lances */}
+            <div className="bg-slate-950/80 border border-purple-900/30 rounded-xl px-3.5 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-1 shadow-sm">
+              <span className="text-[10px] font-black text-slate-400 uppercase tracking-wider">
+                MEUS LANCES
+              </span>
+              <span className="text-base font-black font-mono text-purple-300">
+                {totalMeusLances}
+              </span>
+            </div>
+
+            {/* Card: Liderando */}
+            <div className="bg-slate-950/80 border border-emerald-900/40 rounded-xl px-3.5 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-1 shadow-sm">
+              <span className="text-[10px] font-black text-emerald-400 uppercase tracking-wider flex items-center gap-1">
+                <CheckCircle2 className="w-3 h-3 text-emerald-400" />
+                LIDERANDO
+              </span>
+              <span className="text-base font-black font-mono text-emerald-400">
+                {totalLiderando}
+              </span>
+            </div>
+
+            {/* Card: Superados */}
+            <div className="bg-slate-950/80 border border-rose-900/40 rounded-xl px-3.5 py-2.5 flex flex-col sm:flex-row sm:items-center justify-between gap-1 shadow-sm">
+              <span className="text-[10px] font-black text-rose-400 uppercase tracking-wider flex items-center gap-1">
+                <AlertCircle className="w-3 h-3 text-rose-400" />
+                SUPERADOS
+              </span>
+              <span className="text-base font-black font-mono text-rose-400">
+                {totalSuperados}
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* 6. BARRA DE FILTROS: TODOS | LIDERANDO | SUPERADOS */}
+        {totalMeusLances > 0 && (
+          <div className="px-5 sm:px-6 pt-4 pb-2 flex items-center gap-2 flex-wrap relative z-10">
+            <span className="text-xs font-bold text-slate-400 mr-1">Filtrar:</span>
+
+            <button
+              onClick={() => setFiltroMeusLances('TODOS')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-black uppercase tracking-wider transition-colors cursor-pointer border ${
+                filtroMeusLances === 'TODOS'
+                  ? 'bg-purple-600 text-white border-purple-500 shadow-md'
+                  : 'bg-slate-950/70 text-slate-400 hover:text-white border-slate-800'
+              }`}
+            >
+              TODOS ({totalMeusLances})
+            </button>
+
+            <button
+              onClick={() => setFiltroMeusLances('LIDERANDO')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-black uppercase tracking-wider transition-colors cursor-pointer border ${
+                filtroMeusLances === 'LIDERANDO'
+                  ? 'bg-emerald-600 text-white border-emerald-500 shadow-md'
+                  : 'bg-slate-950/70 text-slate-400 hover:text-emerald-300 border-slate-800'
+              }`}
+            >
+              LIDERANDO ({totalLiderando})
+            </button>
+
+            <button
+              onClick={() => setFiltroMeusLances('SUPERADOS')}
+              className={`px-3 py-1.5 rounded-xl text-xs font-black uppercase tracking-wider transition-colors cursor-pointer border ${
+                filtroMeusLances === 'SUPERADOS'
+                  ? 'bg-rose-600 text-white border-rose-500 shadow-md'
+                  : 'bg-slate-950/70 text-slate-400 hover:text-rose-300 border-slate-800'
+              }`}
+            >
+              SUPERADOS ({totalSuperados})
+            </button>
+          </div>
+        )}
+
+        {/* Grid de Cards de "Meus Lances" ou Estado Vazio */}
+        <div className="p-5 sm:p-6 pt-3 relative z-10">
+          {totalMeusLances === 0 ? (
+            <div className="p-8 sm:p-12 text-center text-slate-400 space-y-3 bg-slate-950/40 rounded-2xl border border-slate-800/80">
+              <div className="w-12 h-12 rounded-2xl bg-purple-950/40 border border-purple-800/40 flex items-center justify-center mx-auto text-purple-400 shadow-inner">
+                <Gavel className="w-6 h-6" />
+              </div>
+              <p className="text-base font-bold text-slate-200">
+                Você ainda não realizou lances em nenhum leilão
+              </p>
+              <p className="text-xs text-slate-400 max-w-md mx-auto leading-relaxed">
+                Participe dos leilões disponíveis abaixo para disputar atletas no mercado e acompanhar suas ofertas em tempo real nesta área.
+              </p>
+            </div>
+          ) : meusLancesExibidos.length === 0 ? (
+            <div className="p-8 text-center text-slate-400 space-y-2 bg-slate-950/40 rounded-2xl border border-slate-800/80">
+              <p className="text-sm font-bold text-slate-300">
+                Nenhum lance encontrado para o filtro selecionado ({filtroMeusLances.toLowerCase()}).
+              </p>
+              <button
+                onClick={() => setFiltroMeusLances('TODOS')}
+                className="text-xs font-bold text-purple-400 hover:text-purple-300 underline cursor-pointer"
+              >
+                Ver todos os meus lances
+              </button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+              {meusLancesExibidos.map((item) => {
+                const leilao = item.leilao;
+                return (
+                  <div
+                    key={leilao.id}
+                    className={`bg-slate-950 border rounded-2xl p-5 flex flex-col justify-between transition-all duration-200 shadow-xl space-y-4 ${
+                      item.statusDisputa === 'LIDERANDO'
+                        ? 'border-emerald-500/40 hover:border-emerald-400/70 shadow-emerald-950/20'
+                        : item.statusDisputa === 'SUPERADO'
+                        ? 'border-rose-500/40 hover:border-rose-400/70 shadow-rose-950/20'
+                        : 'border-slate-800 hover:border-slate-700'
+                    }`}
+                  >
+                    <div>
+                      {/* Topo do Card: 3. STATUS DA DISPUTA + TEMPO RESTANTE */}
+                      <div className="flex justify-between items-start gap-2 mb-3.5">
+                        {item.statusDisputa === 'LIDERANDO' ? (
+                          <span className="px-2.5 py-1 rounded-full text-[11px] font-black uppercase tracking-wider bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 flex items-center gap-1.5 shadow-sm">
+                            <span className="w-2 h-2 rounded-full bg-emerald-400 animate-pulse" />
+                            <span>VOCÊ É O LÍDER</span>
+                          </span>
+                        ) : item.statusDisputa === 'SUPERADO' ? (
+                          <span className="px-2.5 py-1 rounded-full text-[11px] font-black uppercase tracking-wider bg-rose-500/15 text-rose-400 border border-rose-500/30 flex items-center gap-1.5 shadow-sm">
+                            <span className="w-2 h-2 rounded-full bg-rose-500" />
+                            <span>LANCE SUPERADO</span>
+                          </span>
+                        ) : (
+                          <span className="px-2.5 py-1 rounded-full text-[11px] font-black uppercase tracking-wider bg-slate-800 text-slate-300 border border-slate-700 flex items-center gap-1.5">
+                            <span className="w-2 h-2 rounded-full bg-slate-400" />
+                            <span>AGUARDANDO</span>
+                          </span>
+                        )}
+
+                        {/* Tempo restante do leilão */}
+                        <span className="text-xs text-slate-400 font-mono flex items-center gap-1 shrink-0 bg-slate-900/90 px-2 py-0.5 rounded-lg border border-slate-800">
+                          <Clock className="w-3.5 h-3.5 text-purple-400" />
+                          <span>{formatRemainingTime(leilao.endTime)}</span>
+                        </span>
+                      </div>
+
+                      {/* 2. CARD DO JOGADOR: Foto, Nome, Posição, Idade, FM2008 */}
+                      <div className="flex items-center gap-3.5 mb-4">
+                        <div className="w-14 h-14 rounded-2xl bg-slate-900 border border-slate-800 overflow-hidden flex items-center justify-center font-black text-amber-400 shrink-0 shadow-md">
+                          {leilao.playerPhoto ? (
+                            <img
+                              src={leilao.playerPhoto}
+                              alt={leilao.playerName}
+                              className="w-full h-full object-cover object-top"
+                            />
+                          ) : (
+                            <span className="text-lg">{leilao.playerName.charAt(0)}</span>
+                          )}
+                        </div>
+
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-2 flex-wrap">
+                            <h3 className="font-black text-white text-base leading-tight truncate">
+                              {leilao.playerName}
+                            </h3>
+                            {isFM2008Player(leilao) && (
+                              <span className="text-[10px] font-black px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
+                                FM2008
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex items-center gap-2 text-xs text-slate-400 mt-1 flex-wrap">
+                            <span className="font-bold text-slate-300 bg-slate-900 px-2 py-0.5 rounded border border-slate-800">
+                              {leilao.playerPosition || 'Atleta'}
+                            </span>
+                            {leilao.playerAge && <span>· {leilao.playerAge} anos</span>}
+                            {leilao.playerRating && (
+                              <span className="text-amber-400 font-bold font-mono">
+                                · OVR {leilao.playerRating}
+                              </span>
+                            )}
+                          </div>
+                        </div>
+                      </div>
+
+                      {/* Bloco de Dados Financeiros e Concorrência */}
+                      <div className="bg-slate-900/90 rounded-2xl p-4 border border-slate-800 space-y-3 mb-4">
+                        {/* Meu Último Lance e Lance Atual */}
+                        <div className="grid grid-cols-2 gap-3 pb-3 border-b border-slate-800/80">
+                          <div>
+                            <span className="text-[11px] font-bold text-slate-400 block uppercase">
+                              Meu Último Lance
+                            </span>
+                            <span className="text-sm font-black font-mono text-purple-300">
+                              {formatCurrencyBRL(item.meuUltimoLance.value)}
+                            </span>
+                          </div>
+
+                          <div>
+                            <span className="text-[11px] font-bold text-slate-400 block uppercase">
+                              Lance Atual do Leilão
+                            </span>
+                            <span className="text-sm font-black font-mono text-emerald-400">
+                              {formatCurrencyBRL(item.lanceAtual)}
+                            </span>
+                          </div>
+                        </div>
+
+                        {/* 4. CONCORRENTE: Informação do Líder e Disputa */}
+                        <div className="space-y-1.5 text-xs">
+                          <div className="flex justify-between items-center gap-2">
+                            <span className="text-slate-400">Líder do leilão:</span>
+                            {item.isLider ? (
+                              <span className="font-bold text-emerald-400 flex items-center gap-1">
+                                <Sparkles className="w-3.5 h-3.5 text-emerald-400" />
+                                Você é o líder
+                              </span>
+                            ) : (
+                              <span className="font-bold text-rose-400 truncate text-right">
+                                Concorrente atual: <strong className="text-white">{item.liderNome || 'Outro Manager'}</strong>
+                              </span>
+                            )}
+                          </div>
+
+                          <div className="flex justify-between items-center text-[11px] text-slate-400 pt-1 border-t border-slate-800/50">
+                            <span>Quantidade de concorrentes:</span>
+                            <span className="font-mono font-bold text-slate-300">
+                              {item.quantidadeConcorrentes}{' '}
+                              {item.quantidadeConcorrentes === 1 ? 'concorrente' : 'concorrentes'}
+                            </span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* 8. BOTÃO DE AÇÃO: VER LEILÃO */}
+                    <button
+                      onClick={() => handleAbrirLance(leilao)}
+                      className="w-full py-2.5 px-4 bg-purple-600 hover:bg-purple-500 text-white font-black text-xs uppercase tracking-wider rounded-xl transition-all flex items-center justify-center gap-2 shadow-lg shadow-purple-900/30 hover:scale-[1.02] active:scale-95 cursor-pointer border border-purple-500/40"
+                    >
+                      <Gavel className="w-4 h-4 text-purple-200" />
+                      <span>VER LEILÃO</span>
+                    </button>
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </section>
+
+      {/* ============================================================ */}
+      {/* 2. SEÇÃO: LEILÕES DISPONÍVEIS */}
+      {/* ============================================================ */}
       <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
         <div className="p-5 border-b border-slate-800 flex flex-col md:flex-row md:items-center justify-between gap-4">
           <div className="flex items-center gap-3">
@@ -410,7 +893,6 @@ export const ManagerLeiloesV3Page: React.FC = () => {
           </div>
 
           <div className="flex items-center gap-3 flex-1 md:max-w-md md:justify-end">
-            {/* Caixa de Pesquisa com Ícone de Lupa */}
             <div className="relative flex-1">
               <Search className="w-4 h-4 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" />
               <input
@@ -424,7 +906,7 @@ export const ManagerLeiloesV3Page: React.FC = () => {
                 <button
                   type="button"
                   onClick={() => setTermoBusca('')}
-                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white text-xs px-1"
+                  className="absolute right-2.5 top-1/2 -translate-y-1/2 text-slate-400 hover:text-white text-xs px-1 cursor-pointer"
                   title="Limpar pesquisa"
                 >
                   ✕
@@ -435,7 +917,7 @@ export const ManagerLeiloesV3Page: React.FC = () => {
             <button
               onClick={() => carregarLeiloes(true)}
               disabled={loading || refreshing}
-              className="px-3 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl text-xs font-medium text-slate-300 hover:text-white flex items-center gap-1.5 transition disabled:opacity-50 shrink-0"
+              className="px-3 py-2 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl text-xs font-medium text-slate-300 hover:text-white flex items-center gap-1.5 transition disabled:opacity-50 shrink-0 cursor-pointer"
               title="Buscar leilões atualizados no Firestore"
             >
               <RefreshCw className={`w-3.5 h-3.5 text-amber-400 ${refreshing ? 'animate-spin' : ''}`} />
@@ -468,7 +950,7 @@ export const ManagerLeiloesV3Page: React.FC = () => {
             </p>
             <button
               onClick={() => setTermoBusca('')}
-              className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl text-xs font-medium text-slate-300 transition"
+              className="px-3.5 py-1.5 bg-slate-800 hover:bg-slate-700 border border-slate-700 rounded-xl text-xs font-medium text-slate-300 transition cursor-pointer"
             >
               Limpar busca
             </button>
@@ -478,7 +960,7 @@ export const ManagerLeiloesV3Page: React.FC = () => {
             {leiloesAbertosExibidos.map((l) => (
               <div
                 key={l.id}
-                className="bg-slate-950 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between hover:border-slate-700 transition"
+                className="bg-slate-950 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between hover:border-slate-700 transition space-y-4"
               >
                 <div>
                   <div className="flex justify-between items-start mb-4">
@@ -502,7 +984,7 @@ export const ManagerLeiloesV3Page: React.FC = () => {
                     <div>
                       <div className="flex items-center gap-1.5">
                         <h3 className="font-bold text-white text-base">{l.playerName}</h3>
-                        {(l.playerId?.startsWith('fm2008_') || l.playerClub === 'Manchester United' || l.playerClub === 'Man Utd' || l.playerClub === 'Barcelona' || l.playerClub === 'Inter' || l.playerClub === 'Milan') && (
+                        {isFM2008Player(l) && (
                           <span className="text-[10px] font-bold px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 border border-amber-500/30">
                             FM2008
                           </span>
@@ -519,13 +1001,13 @@ export const ManagerLeiloesV3Page: React.FC = () => {
                     <div className="flex justify-between text-xs text-slate-400">
                       <span>Lance Inicial:</span>
                       <span className="font-mono text-slate-200 font-semibold">
-                        R$ {Number(l.initialBid).toLocaleString('pt-BR')}
+                        {formatCurrencyBRL(l.initialBid)}
                       </span>
                     </div>
                     <div className="flex justify-between text-xs text-slate-400">
                       <span>Incremento Mínimo:</span>
                       <span className="font-mono text-slate-200">
-                        R$ {Number(l.minIncrement).toLocaleString('pt-BR')}
+                        {formatCurrencyBRL(l.minIncrement)}
                       </span>
                     </div>
                   </div>
@@ -533,7 +1015,7 @@ export const ManagerLeiloesV3Page: React.FC = () => {
 
                 <button
                   onClick={() => handleAbrirLance(l)}
-                  className="w-full py-2.5 px-4 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-xl transition flex items-center justify-center gap-2 shadow-lg"
+                  className="w-full py-2.5 px-4 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-xl transition flex items-center justify-center gap-2 shadow-lg cursor-pointer"
                 >
                   <Gavel className="w-4 h-4" />
                   Dar Lance / Ver Lances
@@ -544,7 +1026,9 @@ export const ManagerLeiloesV3Page: React.FC = () => {
         )}
       </div>
 
-      {/* 2. SEÇÃO: RESULTADOS / HISTÓRICO DE LEILÕES ENCERRADOS */}
+      {/* ============================================================ */}
+      {/* 3. SEÇÃO: RESULTADOS / HISTÓRICO DE LEILÕES ENCERRADOS */}
+      {/* ============================================================ */}
       <div className="bg-slate-900 border border-slate-800 rounded-2xl overflow-hidden shadow-xl">
         <div className="p-5 border-b border-slate-800 flex justify-between items-center">
           <div className="flex items-center gap-2">
@@ -579,7 +1063,6 @@ export const ManagerLeiloesV3Page: React.FC = () => {
                   className="bg-slate-950 border border-slate-800 rounded-2xl p-5 flex flex-col justify-between hover:border-slate-700 transition space-y-4"
                 >
                   <div>
-                    {/* Top: Status Badge + Data/Hora */}
                     <div className="flex justify-between items-start mb-3">
                       <span className="px-2.5 py-0.5 rounded-full text-xs font-semibold bg-purple-500/15 text-purple-400 border border-purple-500/30 flex items-center gap-1.5">
                         <CheckCircle2 className="w-3.5 h-3.5 text-purple-400" />
@@ -596,7 +1079,6 @@ export const ManagerLeiloesV3Page: React.FC = () => {
                       </span>
                     </div>
 
-                    {/* Jogador + Posição */}
                     <div className="flex items-center gap-3 mb-4">
                       <div className="w-12 h-12 rounded-xl bg-slate-800 border border-slate-700 overflow-hidden flex items-center justify-center font-bold text-amber-400 shrink-0">
                         {l.playerPhoto ? (
@@ -614,7 +1096,6 @@ export const ManagerLeiloesV3Page: React.FC = () => {
                       </div>
                     </div>
 
-                    {/* Bloco de Arrematação / Vencedor */}
                     <div className="bg-slate-900/80 rounded-xl p-3.5 border border-slate-800 space-y-2.5">
                       <div className="flex justify-between items-center text-xs">
                         <span className="text-slate-400 flex items-center gap-1.5">
@@ -639,7 +1120,7 @@ export const ManagerLeiloesV3Page: React.FC = () => {
                       <div className="pt-2 border-t border-slate-800/80 flex justify-between items-center text-xs">
                         <span className="text-slate-400">Valor Final Arrematado:</span>
                         <span className="font-mono font-bold text-emerald-400 text-sm">
-                          R$ {valorFinal.toLocaleString('pt-BR')}
+                          {formatCurrencyBRL(valorFinal)}
                         </span>
                       </div>
 
@@ -650,10 +1131,9 @@ export const ManagerLeiloesV3Page: React.FC = () => {
                     </div>
                   </div>
 
-                  {/* Botão Ver Lances */}
                   <button
                     onClick={() => handleAbrirLance(l)}
-                    className="w-full py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white font-semibold rounded-xl transition flex items-center justify-center gap-2 border border-slate-700 text-sm shadow"
+                    className="w-full py-2.5 px-4 bg-slate-800 hover:bg-slate-700 text-slate-200 hover:text-white font-semibold rounded-xl transition flex items-center justify-center gap-2 border border-slate-700 text-sm shadow cursor-pointer"
                   >
                     <Gavel className="w-4 h-4 text-amber-400" />
                     <span>Ver Lances</span>
@@ -688,7 +1168,7 @@ export const ManagerLeiloesV3Page: React.FC = () => {
               </div>
               <button
                 onClick={() => setLeilaoAtivo(null)}
-                className="text-slate-400 hover:text-white"
+                className="text-slate-400 hover:text-white cursor-pointer"
               >
                 ✕
               </button>
@@ -698,147 +1178,153 @@ export const ManagerLeiloesV3Page: React.FC = () => {
             {leilaoAtivo.status === 'ENCERRADO' && (
               <div className="bg-purple-950/40 border border-purple-500/30 rounded-xl p-4 space-y-2.5">
                 <div className="flex items-center gap-2 text-purple-300 font-bold text-xs uppercase tracking-wider">
-                  <CheckCircle2 className="w-4 h-4 text-purple-400" />
-                  <span>Leilão Encerrado & Liquidado</span>
+                  <Trophy className="w-4 h-4 text-amber-400" />
+                  <span>Resultado Oficial do Leilão</span>
                 </div>
                 <div className="grid grid-cols-2 gap-2 text-xs">
                   <div>
-                    <span className="text-slate-400 block text-[11px]">Vencedor:</span>
-                    <span className="font-bold text-amber-400">
-                      {leilaoAtivo.winnerManagerName || 'Rodrigo Mariano'}
-                    </span>
+                    <span className="text-slate-400 block">Vencedor:</span>
+                    <span className="font-bold text-white">{leilaoAtivo.winnerManagerName || 'Rodrigo Mariano'}</span>
                   </div>
                   <div>
-                    <span className="text-slate-400 block text-[11px]">Clube:</span>
-                    <span className="font-bold text-white flex items-center gap-1">
-                      <Shield className="w-3 h-3 text-indigo-400" />
-                      {leilaoAtivo.winnerClubName || 'Ninja FC'}
-                    </span>
+                    <span className="text-slate-400 block">Clube:</span>
+                    <span className="font-bold text-amber-400">{leilaoAtivo.winnerClubName || 'Ninja FC'}</span>
                   </div>
-                  <div className="col-span-2 pt-2 border-t border-purple-500/20 flex justify-between items-center">
-                    <span className="text-slate-300 font-medium">Valor Final Arrematado:</span>
+                  <div className="col-span-2 pt-1 border-t border-purple-800/40 flex justify-between items-center">
+                    <span className="text-slate-400">Valor de Arremate:</span>
                     <span className="font-mono font-bold text-emerald-400 text-sm">
-                      R$ {Number(leilaoAtivo.winningBid || leilaoAtivo.highestBid || 1300000).toLocaleString('pt-BR')}
+                      {formatCurrencyBRL(leilaoAtivo.winningBid || leilaoAtivo.highestBid || 1300000)}
                     </span>
                   </div>
                 </div>
-                <p className="text-[11px] text-slate-400 italic">
-                  Este leilão está finalizado. Novos lances não são permitidos.
-                </p>
               </div>
             )}
 
-            {/* Indicadores Financeiros do Clube (apenas para leilão aberto) */}
-            {clubeExibido && leilaoAtivo.status === 'ABERTO' && (
-              <div className="grid grid-cols-3 gap-2 p-3 bg-slate-950/80 rounded-xl border border-slate-800 text-center text-xs">
-                <div>
-                  <span className="text-slate-400 block text-[10px] uppercase font-semibold">Orçamento Total</span>
-                  <span className="font-mono font-bold text-slate-200">
-                    R$ {Number(clubeExibido.balance ?? 0).toLocaleString('pt-BR')}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-amber-400/90 block text-[10px] uppercase font-semibold">Reserva Retida</span>
-                  <span className="font-mono font-bold text-amber-400">
-                    R$ {Number(clubeExibido.reservedTransferBudget ?? 0).toLocaleString('pt-BR')}
-                  </span>
-                </div>
-                <div>
-                  <span className="text-emerald-400/90 block text-[10px] uppercase font-semibold">Disponível</span>
-                  <span className="font-mono font-bold text-emerald-400">
-                    R$ {Math.max(0, Number(clubeExibido.balance ?? 0) - Number(clubeExibido.reservedTransferBudget ?? 0)).toLocaleString('pt-BR')}
-                  </span>
-                </div>
+            {/* Detalhes do Leilão */}
+            <div className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-2 text-sm">
+              <div className="flex justify-between">
+                <span className="text-slate-400">Lance Inicial:</span>
+                <span className="font-mono font-semibold">
+                  {formatCurrencyBRL(leilaoAtivo.initialBid)}
+                </span>
               </div>
-            )}
-
-            {/* Feedback Banner no Modal */}
-            {feedback && (
-              <div
-                className={`p-3.5 rounded-xl flex items-center justify-between border ${
-                  feedback.type === 'success'
-                    ? 'bg-emerald-950/40 border-emerald-500/30 text-emerald-300'
-                    : 'bg-red-950/40 border-red-500/30 text-red-300'
-                }`}
-              >
-                <div className="flex items-center gap-2.5 text-xs">
-                  {feedback.type === 'success' ? (
-                    <CheckCircle2 className="w-4 h-4 flex-shrink-0" />
-                  ) : (
-                    <AlertCircle className="w-4 h-4 flex-shrink-0" />
+              <div className="flex justify-between">
+                <span className="text-slate-400">Incremento Mínimo:</span>
+                <span className="font-mono">
+                  {formatCurrencyBRL(leilaoAtivo.minIncrement)}
+                </span>
+              </div>
+              <div className="flex justify-between border-t border-slate-800 pt-2">
+                <span className="text-slate-400">Maior Lance Atual:</span>
+                <span className="font-mono text-emerald-400 font-bold">
+                  {formatCurrencyBRL(
+                    lancesModal.length > 0 ? lancesModal[0].value : leilaoAtivo.highestBid || leilaoAtivo.initialBid
                   )}
-                  <span>{feedback.message}</span>
-                </div>
+                </span>
               </div>
-            )}
+            </div>
 
-            {/* Formulário de Lance se ABERTO */}
+            {/* Formulário de Lance (somente se ABERTO) */}
             {leilaoAtivo.status === 'ABERTO' && (
-              <form onSubmit={handleSubmeterLance} className="bg-slate-950 p-4 rounded-xl border border-slate-800 space-y-3">
-                <label className="block text-xs uppercase tracking-wider text-slate-400 font-semibold">
-                  Seu Lance (R$)
-                </label>
-                <div className="flex gap-2">
+              <form onSubmit={handleSubmeterLance} className="space-y-4">
+                <div>
+                  <label className="block text-xs font-semibold text-slate-300 uppercase tracking-wider mb-1.5">
+                    Seu Lance (R$)
+                  </label>
                   <input
                     type="number"
-                    min={Number(leilaoAtivo.initialBid)}
-                    step={Number(leilaoAtivo.minIncrement)}
                     value={valorLance}
                     onChange={(e) => setValorLance(Number(e.target.value))}
-                    required
-                    className="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-4 py-2 text-white font-mono focus:outline-none focus:border-amber-500"
+                    min={
+                      (lancesModal.length > 0 ? Number(lancesModal[0].value) : Number(leilaoAtivo.highestBid || leilaoAtivo.initialBid)) +
+                      Number(leilaoAtivo.minIncrement)
+                    }
+                    step={Number(leilaoAtivo.minIncrement) || 100000}
+                    className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-2.5 text-lg font-mono font-bold text-amber-400 focus:outline-none focus:border-amber-500"
+                    placeholder="Digite o valor..."
                   />
-                  <button
-                    type="submit"
-                    disabled={submitting}
-                    className="px-5 py-2 bg-amber-500 hover:bg-amber-400 disabled:opacity-50 text-slate-950 font-bold rounded-xl transition shadow"
-                  >
-                    {submitting ? 'Enviando...' : 'Confirmar'}
-                  </button>
+                  <p className="text-[11px] text-slate-500 mt-1">
+                    Mínimo exigido:{' '}
+                    {formatCurrencyBRL(
+                      (lancesModal.length > 0 ? Number(lancesModal[0].value) : Number(leilaoAtivo.highestBid || leilaoAtivo.initialBid)) +
+                        Number(leilaoAtivo.minIncrement)
+                    )}
+                  </p>
                 </div>
-                <p className="text-[11px] text-slate-500">
-                  Gravação direta em <code className="text-amber-400 font-mono">/leiloes/{leilaoAtivo.id}/lances</code>
-                </p>
+
+                {feedback && (
+                  <div
+                    className={`p-3 rounded-xl text-xs flex items-center gap-2 ${
+                      feedback.type === 'success'
+                        ? 'bg-emerald-500/10 text-emerald-400 border border-emerald-500/20'
+                        : 'bg-rose-500/10 text-rose-400 border border-rose-500/20'
+                    }`}
+                  >
+                    {feedback.type === 'success' ? (
+                      <CheckCircle2 className="w-4 h-4 shrink-0" />
+                    ) : (
+                      <AlertCircle className="w-4 h-4 shrink-0" />
+                    )}
+                    <span>{feedback.message}</span>
+                  </div>
+                )}
+
+                <button
+                  type="submit"
+                  disabled={submitting}
+                  className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-xl transition flex items-center justify-center gap-2 shadow-lg disabled:opacity-50 cursor-pointer"
+                >
+                  <Gavel className="w-4 h-4" />
+                  <span>{submitting ? 'Registrando lance...' : 'Confirmar Lance'}</span>
+                </button>
               </form>
             )}
 
-            {/* Histórico de Lances */}
-            <div>
-              <h4 className="text-xs uppercase tracking-wider text-slate-400 font-semibold mb-2">
-                Histórico de Lances ({lancesModal.length})
+            {/* Histórico Oficial de Lances (/leiloes/{leilaoId}/lances) */}
+            <div className="space-y-2">
+              <h4 className="text-xs font-semibold text-slate-400 uppercase tracking-wider flex items-center gap-1.5">
+                <History className="w-3.5 h-3.5" />
+                <span>Histórico Oficial de Lances ({lancesModal.length})</span>
               </h4>
-              <div className="max-h-56 overflow-y-auto space-y-2 border border-slate-800 rounded-xl p-2 bg-slate-950/50">
+
+              <div className="max-h-48 overflow-y-auto space-y-1.5 pr-1 scrollbar-thin">
                 {lancesModal.length === 0 ? (
-                  <p className="text-center py-6 text-xs text-slate-500">Nenhum lance registrado até o momento.</p>
+                  <p className="text-xs text-slate-500 italic py-2 text-center">
+                    Nenhum lance registrado até o momento.
+                  </p>
                 ) : (
-                  lancesModal.map((lance) => (
+                  lancesModal.map((lance, idx) => (
                     <div
-                      key={lance.id}
-                      className="p-2.5 bg-slate-900 border border-slate-800 rounded-lg flex justify-between items-center text-xs"
+                      key={lance.id || idx}
+                      className={`flex justify-between items-center text-xs p-2.5 rounded-xl border ${
+                        idx === 0
+                          ? 'bg-amber-500/10 border-amber-500/30 text-amber-200'
+                          : 'bg-slate-950 border-slate-800 text-slate-300'
+                      }`}
                     >
-                      <div>
-                        <p className="font-semibold text-white">{lance.managerName}</p>
-                        <p className="text-[11px] text-slate-400 font-mono">{lance.clubId}</p>
+                      <div className="flex items-center gap-2">
+                        <span className="font-mono text-[10px] text-slate-500">#{idx + 1}</span>
+                        <div>
+                          <span className="font-semibold block">{lance.managerName || 'Treinador'}</span>
+                          <span className="text-[10px] text-slate-500 font-mono">
+                            {lance.createdAt ? new Date(lance.createdAt).toLocaleTimeString('pt-BR') : ''}
+                          </span>
+                        </div>
                       </div>
-                      <div className="text-right">
-                        <p className="font-mono font-bold text-emerald-400">
-                          R$ {Number(lance.value).toLocaleString('pt-BR')}
-                        </p>
-                        <p className="text-[10px] text-slate-500 font-mono">
-                          {new Date(lance.createdAt).toLocaleTimeString('pt-BR')}
-                        </p>
-                      </div>
+                      <span className="font-mono font-bold text-sm text-emerald-400">
+                        {formatCurrencyBRL(lance.value)}
+                      </span>
                     </div>
                   ))
                 )}
               </div>
             </div>
 
-            <div className="pt-2 border-t border-slate-800 text-right">
+            <div className="border-t border-slate-800 pt-3 flex justify-end">
               <button
                 type="button"
                 onClick={() => setLeilaoAtivo(null)}
-                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-sm font-medium"
+                className="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 rounded-xl text-xs font-semibold transition cursor-pointer"
               >
                 Fechar
               </button>

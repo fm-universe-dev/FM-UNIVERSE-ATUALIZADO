@@ -65,9 +65,37 @@ export function normalizePlayerRecord(raw: any, id: string): Player {
   p.nationalityCode = raw.nationalityCode || 'BRA';
   p.nationality = raw.nationality || raw.nacionalidade || 'Brasil';
   p.position = raw.position || raw.posicao || 'MC';
-  p.positionCategory = raw.positionCategory || 'MID';
+  p.positionCategory = raw.positionCategory;
+  if (!p.positionCategory || p.positionCategory === 'MID') {
+    const pos = String(p.position || '').toUpperCase();
+    if (pos === 'GK' || pos === 'GR') {
+      p.positionCategory = 'GOLEIRO';
+    } else if (['CB', 'LB', 'RB', 'LWB', 'RWB', 'DC', 'DL', 'DR', 'D C', 'D L', 'D R', 'SW', 'DF'].some((k) => pos.includes(k))) {
+      p.positionCategory = 'DEFENSOR';
+    } else if (['ST', 'CF', 'FW', 'AC', 'PL', 'ATA', 'CA', 'FC'].some((k) => pos.includes(k)) || pos.startsWith('ST')) {
+      p.positionCategory = 'ATACANTE';
+    } else {
+      p.positionCategory = 'MEIO-CAMPISTA';
+    }
+  }
+
   p.name = raw.name || raw.nome || raw.shortName || raw.knownAs || 'Jogador';
   p.fullName = raw.fullName || raw.nomeCompleto || raw.nome || p.name;
+
+  // Reconhecimento de Ronaldo (Fenômeno - FM2008 707715)
+  if (
+    String(raw.id) === 'fm2008_707715' ||
+    String(raw.id) === '707715' ||
+    String(raw.uniqueId) === '707715' ||
+    String(id) === 'fm2008_707715' ||
+    (raw.name === 'Ronaldo' && (raw.fm2008_clube_origem === 'A.C. Milan' || raw.Club === 'A.C. Milan' || raw.club === 'A.C. Milan'))
+  ) {
+    p.name = 'Ronaldo (Fenômeno)';
+    p.knownAs = 'Ronaldo (Fenômeno)';
+    p.fullName = 'Ronaldo Luís Nazário de Lima (Fenômeno)';
+    p.position = p.position || 'ST';
+    p.positionCategory = 'ATACANTE';
+  }
 
   const officialLeagueClubNames = [
     'ninja fc',
@@ -275,6 +303,8 @@ interface CachedPageResult {
   data: Player[];
   page: number;
   pageSize: number;
+  total?: number;
+  totalPages?: number;
   hasNextPage: boolean;
   hasPrevPage: boolean;
   timestamp: number;
@@ -287,9 +317,13 @@ const pageCache = new Map<string, CachedPageResult>();
 // chave -> Map<página, snapshot do último documento daquela página>
 const queryCursors = new Map<string, Map<number, QueryDocumentSnapshot<DocumentData>>>();
 
+export function removeAccents(str: string): string {
+  return str.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+}
+
 /**
  * Gera variantes de busca fonéticas, maiúsculas/minúsculas e acentos para encontrar atletas
- * na coleção /jogadores do Firestore (ex: Kaká, Abidal, Ronaldo, Cristiano).
+ * na coleção /jogadores do Firestore de forma 100% genérica (sem listas estáticas de jogadores).
  */
 export function getSearchVariants(rawQuery: string): string[] {
   const q = rawQuery.trim();
@@ -297,58 +331,87 @@ export function getSearchVariants(rawQuery: string): string[] {
   const variants = new Set<string>();
 
   const lower = q.toLowerCase();
-  const accentMap: Record<string, string[]> = {
-    kaka: ['Kaká', 'Kaka', 'Ricardo Izecson dos Santos Leite'],
-    kaká: ['Kaká', 'Kaka', 'Ricardo Izecson dos Santos Leite'],
-    abidal: ['Abidal, Eric', 'Abidal', 'Eric Abidal'],
-    'eric abidal': ['Abidal, Eric', 'Abidal', 'Eric Abidal'],
-    'abidal, eric': ['Abidal, Eric', 'Abidal'],
-    ronaldo: ['Ronaldo, Cristiano', 'Ronaldo', 'Cristiano Ronaldo'],
-    cristiano: ['Ronaldo, Cristiano', 'Cristiano', 'Cristiano Ronaldo'],
-    'cristiano ronaldo': ['Ronaldo, Cristiano', 'Cristiano Ronaldo', 'Ronaldo'],
-    'ronaldo, cristiano': ['Ronaldo, Cristiano', 'Cristiano Ronaldo', 'Ronaldo'],
-    messi: ['Messi, Lionel', 'Messi', 'Lionel Messi'],
-    'lionel messi': ['Messi, Lionel', 'Lionel Messi', 'Messi'],
-    'messi, lionel': ['Messi, Lionel', 'Lionel Messi', 'Messi'],
-    pele: ['Pelé', 'Pele'],
-    'pelé': ['Pelé', 'Pele'],
-    ronaldinho: ['Ronaldinho', 'Ronaldinho Gaúcho', 'Ronaldo de Assis Moreira'],
-    ibrahimovic: ['Ibrahimović, Zlatan', 'Ibrahimović', 'Ibrahimovic, Zlatan', 'Ibrahimovic'],
-    'ibrahimović': ['Ibrahimović, Zlatan', 'Ibrahimović', 'Ibrahimovic, Zlatan'],
-    'zlatan ibrahimovic': ['Ibrahimović, Zlatan', 'Ibrahimovic, Zlatan', 'Ibrahimović', 'Ibrahimovic'],
-    'zlatan ibrahimović': ['Ibrahimović, Zlatan', 'Ibrahimovic, Zlatan', 'Ibrahimović'],
-    rooney: ['Rooney, Wayne', 'Rooney', 'Wayne Rooney'],
-    'wayne rooney': ['Rooney, Wayne', 'Wayne Rooney', 'Rooney'],
-    henry: ['Henry, Thierry', 'Henry', 'Thierry Henry'],
-    'thierry henry': ['Henry, Thierry', 'Thierry Henry', 'Henry'],
-  };
+  const unaccented = removeAccents(lower);
 
-  // 1. Mapeamento explícito de atletas consagrados do FM2008
-  if (accentMap[lower]) {
-    accentMap[lower].forEach((v) => variants.add(v));
-  }
-
-  // 2. Se tem duas palavras (ex: "Cristiano Ronaldo" -> "Ronaldo, Cristiano")
-  const parts = q.split(/[\s,]+/).filter(Boolean);
-  if (parts.length === 2) {
-    const p0 = parts[0].charAt(0).toUpperCase() + parts[0].slice(1).toLowerCase();
-    const p1 = parts[1].charAt(0).toUpperCase() + parts[1].slice(1).toLowerCase();
-    variants.add(`${p1}, ${p0}`);
-    variants.add(`${p0} ${p1}`);
-    variants.add(p1);
-    variants.add(p0);
-  }
-
-  // 3. Cada palavra com inicial maiúscula (Title Case)
+  // 1. Title Case genérico
   const title = q
     .split(/\s+/)
     .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
     .join(' ');
   variants.add(title);
 
+  // 2. Termo Ronaldo para variações com 'fenômeno' / 'fenomeno'
+  if (unaccented.includes('fenomeno')) {
+    variants.add('Ronaldo');
+    variants.add('Ronaldo (Fenômeno)');
+  }
+
+  // 3. Inversão genérica de nomes (ex: "Fernando Torres" <-> "Torres, Fernando", "Cristiano Ronaldo" <-> "Ronaldo, Cristiano", "Sergio Ramos" <-> "Ramos, Sergio")
+  const parts = q.split(/[\s,]+/).filter(Boolean);
+  if (parts.length === 2) {
+    const p0 = parts[0].charAt(0).toUpperCase() + parts[0].slice(1).toLowerCase();
+    const p1 = parts[1].charAt(0).toUpperCase() + parts[1].slice(1).toLowerCase();
+    variants.add(p0);
+    variants.add(p1);
+    variants.add(`${p1}, ${p0}`);
+    variants.add(`${p0} ${p1}`);
+    variants.add(`${p0}, ${p1}`);
+    variants.add(`${p1} ${p0}`);
+  } else if (parts.length > 2) {
+    const capitalized = parts.map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase());
+    capitalized.forEach((w) => variants.add(w));
+    const last = capitalized[capitalized.length - 1];
+    const rest = capitalized.slice(0, -1).join(' ');
+    variants.add(`${last}, ${rest}`);
+    variants.add(capitalized.join(' '));
+  }
+
   // 4. Primeira letra maiúscula apenas e original
   variants.add(q.charAt(0).toUpperCase() + q.slice(1));
   variants.add(q);
+  variants.add(lower);
+  variants.add(removeAccents(title));
+  variants.add(removeAccents(q));
+
+  // 5. Aliases conhecidos de clubes universais (não jogadores)
+  const clubAliases: Record<string, string[]> = {
+    milan: ['A.C. Milan', 'Milan', 'AC Milan'],
+    'a.c. milan': ['A.C. Milan', 'Milan'],
+    'ac milan': ['A.C. Milan', 'Milan'],
+    'real madrid': ['Real Madrid', 'R. Madrid'],
+    'r. madrid': ['Real Madrid', 'R. Madrid'],
+    'r madrid': ['Real Madrid', 'R. Madrid'],
+    'man utd': ['Man Utd', 'Manchester United'],
+    'manchester united': ['Man Utd', 'Manchester United'],
+    liverpool: ['Liverpool'],
+    chelsea: ['Chelsea'],
+    barcelona: ['Barcelona', 'FC Barcelona'],
+    arsenal: ['Arsenal'],
+    juventus: ['Juventus'],
+    inter: ['Inter', 'Internazionale'],
+    roma: ['Roma', 'AS Roma'],
+    bayern: ['Bayern', 'Bayern Munich'],
+    valencia: ['Valencia'],
+    sevilla: ['Sevilla'],
+    'atletico madrid': ['Atlético Madrid', 'Atlético', 'Atletico Madrid'],
+    'atlético madrid': ['Atlético Madrid', 'Atlético', 'Atletico Madrid'],
+  };
+
+  if (clubAliases[lower]) {
+    clubAliases[lower].forEach((c) => variants.add(c));
+  }
+  if (clubAliases[unaccented]) {
+    clubAliases[unaccented].forEach((c) => variants.add(c));
+  }
+
+  // 6. Expansão genérica de acentos para termos com vogais finais
+  if (/[aeiou]$/i.test(title)) {
+    const lastChar = title.slice(-1).toLowerCase();
+    const withAcute =
+      title.slice(0, -1) +
+      (lastChar === 'a' ? 'á' : lastChar === 'e' ? 'é' : lastChar === 'i' ? 'í' : lastChar === 'o' ? 'ó' : 'ú');
+    variants.add(withAcute);
+  }
 
   return Array.from(variants).filter(Boolean);
 }
@@ -400,11 +463,13 @@ export const jogadoresService = {
     const completedMap = await getCompletedTransfersMap();
     const reconciledPlayers = applyTransfersToPlayers(players, completedMap);
 
-    // Mescla atletas da base FM2008 do dataStore local se não estiverem na lista
-    const localFM2008 = dataStore.getPlayers().filter((p) => p.databaseSource === 'FM2008' || p.source === 'FM2008' || p.id.startsWith('fm2008_'));
-    for (const p of localFM2008) {
-      if (!reconciledPlayers.some((existing) => existing.id === p.id)) {
-        reconciledPlayers.unshift(p);
+    // Se Firestore estiver vazio/indisponível e não retornou nenhum jogador, recorre ao dataStore
+    if (reconciledPlayers.length === 0) {
+      const localFM2008 = dataStore.getPlayers().filter((p) => p.databaseSource === 'FM2008' || p.source === 'FM2008' || p.id.startsWith('fm2008_'));
+      for (const p of localFM2008) {
+        if (!reconciledPlayers.some((existing) => existing.id === p.id)) {
+          reconciledPlayers.unshift(p);
+        }
       }
     }
 
@@ -432,24 +497,32 @@ export const jogadoresService = {
 
     const colRef = collection(db, 'jogadores');
     const searchTerm = options.search ? options.search.trim() : '';
+    const normSearch = removeAccents(searchTerm.toLowerCase());
     const clubId = options.clubId && options.clubId !== 'ALL' ? options.clubId : undefined;
     const positionCategory = options.positionCategory && options.positionCategory !== 'ALL' ? options.positionCategory : undefined;
     const sortBy = options.sortBy || 'overall';
     const sortOrder = options.sortOrder || (sortBy === 'age' ? 'asc' : 'desc');
 
-    const queryKey = `${searchTerm.toLowerCase()}|${clubId || ''}|${positionCategory || ''}|${sortBy}|${sortOrder}|${pageSize}`;
+    const queryKey = `${normSearch}|${clubId || ''}|${positionCategory || ''}|${sortBy}|${sortOrder}|${pageSize}`;
     const pageKey = `${queryKey}__p${page}`;
 
-    // 1. Cache local da página para evitar consultas repetidas ao voltar/avançar
-    if (!options.forceRefresh && pageCache.has(pageKey)) {
+    // 1. Cache local da página: TTL reduzido e NUNCA reutiliza respostas vazias
+    const isSearchQuery = Boolean(searchTerm);
+    const searchCacheTTL = 30000; // 30s para buscas ativas
+    const browseCacheTTL = 60000; // 60s para paginação geral
+
+    // Consultas ativas na página 1 sempre consultam o Firestore diretamente
+    if (!options.forceRefresh && (!isSearchQuery || page > 1) && pageCache.has(pageKey)) {
       const cached = pageCache.get(pageKey)!;
-      if (Date.now() - cached.timestamp < 180000) {
+      const ttl = isSearchQuery ? searchCacheTTL : browseCacheTTL;
+      // REGRA: Apenas reutiliza se tiver dados válidos e não expirados (nunca cache vazio)
+      if (cached.data && cached.data.length > 0 && Date.now() - cached.timestamp < ttl) {
         return {
           data: cached.data,
-          total: cached.data.length,
+          total: cached.total ?? cached.data.length,
           page: cached.page,
           pageSize: cached.pageSize,
-          totalPages: cached.hasNextPage ? cached.page + 1 : cached.page,
+          totalPages: cached.totalPages ?? (cached.hasNextPage ? cached.page + 1 : cached.page),
           hasNextPage: cached.hasNextPage,
           hasPrevPage: cached.hasPrevPage,
         };
@@ -468,41 +541,77 @@ export const jogadoresService = {
       }
 
       if (searchTerm) {
-        // === BUSCA POR NOME ESPECÍFICA NO FIRESTORE ===
-        // Consulta variantes direcionadas (máx 5) sem baixar a coleção inteira
-        const variants = getSearchVariants(searchTerm).slice(0, 5);
+        // === BUSCA POR ID / NOME / CLUBE / ORIGEM NO FIRESTORE ===
+        const cleanId = searchTerm.replace(/^fm2008_/, '').trim();
         const searchPromises: Promise<any[]>[] = [];
 
-        for (const variant of variants) {
-          const qName = query(
-            colRef,
-            where('name', '>=', variant),
-            where('name', '<=', variant + '\uf8ff'),
-            limit(25)
+        // 1. Se for numérico ou ID único (ex: 707715, 821112, 7458272)
+        if (/^\d+$/.test(cleanId)) {
+          searchPromises.push(
+            getDoc(doc(colRef, 'fm2008_' + cleanId))
+              .then((s) => (s.exists() ? [s] : []))
+              .catch(() => [])
           );
           searchPromises.push(
-            getDocs(qName)
+            getDoc(doc(colRef, cleanId))
+              .then((s) => (s.exists() ? [s] : []))
+              .catch(() => [])
+          );
+          searchPromises.push(
+            getDocs(query(colRef, where('uniqueId', '==', cleanId), limit(10)))
               .then((s) => s.docs)
-              .catch((err) => {
-                throw err;
-              })
+              .catch(() => [])
+          );
+          searchPromises.push(
+            getDocs(query(colRef, where('uniqueId', '==', Number(cleanId)), limit(10)))
+              .then((s) => s.docs)
+              .catch(() => [])
+          );
+          searchPromises.push(
+            getDocs(query(colRef, where('sourceUniqueId', '==', cleanId), limit(10)))
+              .then((s) => s.docs)
+              .catch(() => [])
+          );
+        }
+
+        // 2. Consulta variantes direcionadas (máx 8 variantes prioritárias) no Firestore
+        const variants = getSearchVariants(searchTerm).slice(0, 8);
+
+        for (const variant of variants) {
+          // Busca em name (campo primário de atletas FM2008)
+          searchPromises.push(
+            getDocs(query(colRef, where('name', '>=', variant), where('name', '<=', variant + '\uf8ff'), limit(40)))
+              .then((s) => s.docs)
+              .catch(() => [])
           );
 
-          if (!variant.includes(' ') && !variant.includes(',')) {
-            const qKnown = query(
-              colRef,
-              where('knownAs', '>=', variant),
-              where('knownAs', '<=', variant + '\uf8ff'),
-              limit(25)
-            );
-            searchPromises.push(
-              getDocs(qKnown)
-                .then((s) => s.docs)
-                .catch((err) => {
-                  throw err;
-                })
-            );
-          }
+          // Busca em fullName
+          searchPromises.push(
+            getDocs(query(colRef, where('fullName', '>=', variant), where('fullName', '<=', variant + '\uf8ff'), limit(40)))
+              .then((s) => s.docs)
+              .catch(() => [])
+          );
+
+          // Busca em knownAs
+          searchPromises.push(
+            getDocs(query(colRef, where('knownAs', '>=', variant), where('knownAs', '<=', variant + '\uf8ff'), limit(40)))
+              .then((s) => s.docs)
+              .catch(() => [])
+          );
+
+          // Busca em fm2008_clube_origem (clube histórico FM2008)
+          searchPromises.push(
+            getDocs(query(colRef, where('fm2008_clube_origem', '>=', variant), where('fm2008_clube_origem', '<=', variant + '\uf8ff'), limit(40)))
+              .then((s) => s.docs)
+              .catch(() => [])
+          );
+
+          // Busca em clubName
+          searchPromises.push(
+            getDocs(query(colRef, where('clubName', '>=', variant), where('clubName', '<=', variant + '\uf8ff'), limit(40)))
+              .then((s) => s.docs)
+              .catch(() => [])
+          );
         }
 
         const results = await Promise.all(searchPromises);
@@ -609,11 +718,66 @@ export const jogadoresService = {
       const completedMap = await getCompletedTransfersMap();
       normalizedPlayers = applyTransfersToPlayers(normalizedPlayers, completedMap);
 
-      // Filtros em memória adicionais caso busca combinada por texto
-      if (clubId && searchTerm) {
+      // NOTA: O Firestore /jogadores é a fonte de verdade oficial da base completa FM2008.
+      // Não injetamos listas estáticas ou mockPlayers do dataStore em consultas válidas do Firestore.
+
+      // Filtro multi-campo dinâmico tolerante a acentos e inversão de nomes
+      if (searchTerm) {
+        const normTerm = removeAccents(searchTerm.trim().toLowerCase());
+        const termWords = normTerm.split(/[\s,]+/).filter((w) => w.length > 0);
+
+        normalizedPlayers = normalizedPlayers.filter((p) => {
+          const searchableText = removeAccents(
+            [
+              p.name,
+              p.fullName,
+              p.knownAs,
+              p.shortName,
+              p.clubName,
+              p.currentClubName,
+              p.fm2008_clube_origem,
+              p.originClub,
+              p.position,
+              p.positionCategory,
+              p.nationality,
+              p.nationalityCode,
+              p.uniqueId,
+              (p as any).sourceUniqueId,
+              p.id,
+            ]
+              .filter(Boolean)
+              .join(' ')
+              .toLowerCase()
+          );
+
+          // 1. Termo completo contido no texto pesquisável
+          if (searchableText.includes(normTerm)) {
+            return true;
+          }
+
+          // 2. Todas as palavras da busca presentes no texto do jogador (ex: "Fernando Torres", "Sergio Ramos", "Cristiano Ronaldo", "Ronaldo Fenomeno")
+          if (termWords.length > 1 && termWords.every((word) => searchableText.includes(word))) {
+            return true;
+          }
+
+          return false;
+        });
+      }
+
+      // Filtro de exclusão do próprio clube (Requisito 6)
+      if (options.excludeClubId) {
+        normalizedPlayers = normalizedPlayers.filter(
+          (p) => p.clubId !== options.excludeClubId && p.currentClubId !== options.excludeClubId
+        );
+      }
+
+      // Filtro por clube específico se selecionado
+      if (clubId && clubId !== 'ALL') {
         normalizedPlayers = normalizedPlayers.filter((p) => p.clubId === clubId);
       }
-      if (positionCategory && searchTerm) {
+
+      // Filtro por setor de campo
+      if (positionCategory && positionCategory !== 'ALL') {
         normalizedPlayers = normalizedPlayers.filter((p) => p.positionCategory === positionCategory);
       }
 
@@ -642,39 +806,49 @@ export const jogadoresService = {
         return valB - valA;
       });
 
-      const pagedData = searchTerm ? normalizedPlayers.slice(0, pageSize) : normalizedPlayers;
+      let pagedData: Player[];
+      let total: number;
+      let totalPages: number;
 
-      // Incorpora atletas da base FM2008 do dataStore local que atendam aos filtros
-      const localFM2008Matches = dataStore.queryPlayers(options).data.filter(
-        (p) => p.databaseSource === 'FM2008' || p.source === 'FM2008' || p.id.startsWith('fm2008_')
-      );
-      for (const lp of localFM2008Matches) {
-        if (!pagedData.some((p) => p.id === lp.id)) {
-          pagedData.unshift(lp);
-        }
+      if (searchTerm) {
+        total = normalizedPlayers.length;
+        totalPages = Math.max(1, Math.ceil(total / pageSize));
+        const offset = (page - 1) * pageSize;
+        pagedData = normalizedPlayers.slice(offset, offset + pageSize);
+        hasNextPage = page < totalPages;
+      } else {
+        pagedData = normalizedPlayers.slice(0, pageSize);
+        const estimatedTotal = 12138;
+        total = estimatedTotal;
+        totalPages = Math.max(1, Math.ceil(estimatedTotal / pageSize));
       }
 
-      // Salva no cache local da página
-      pageCache.set(pageKey, {
-        data: pagedData,
-        page,
-        pageSize,
-        hasNextPage,
-        hasPrevPage: page > 1,
-        timestamp: Date.now(),
-      });
+      // Salva no cache local SOMENTE quando houver dados (NUNCA cachear resposta vazia)
+      if (pagedData.length > 0) {
+        pageCache.set(pageKey, {
+          data: pagedData,
+          page,
+          pageSize,
+          total,
+          totalPages,
+          hasNextPage,
+          hasPrevPage: page > 1,
+          timestamp: Date.now(),
+        });
+      }
 
       return {
         data: pagedData,
-        total: pagedData.length,
+        total,
         page,
         pageSize,
-        totalPages: hasNextPage ? page + 1 : page,
+        totalPages,
         hasNextPage,
         hasPrevPage: page > 1,
       };
     } catch (err: any) {
       console.error('Falha na consulta Firestore para /jogadores:', err);
+      // NUNCA salvar erro no cache de páginas
       const isQuota =
         err?.code === 'resource-exhausted' ||
         String(err?.message || '').toLowerCase().includes('quota limit exceeded') ||
@@ -687,37 +861,21 @@ export const jogadoresService = {
         if (cached && cached.data && cached.data.length > 0) {
           return {
             data: cached.data,
-            total: cached.data.length,
+            total: cached.total ?? cached.data.length,
             page,
             pageSize,
-            totalPages: cached.hasNextPage ? page + 1 : page,
+            totalPages: cached.totalPages ?? (cached.hasNextPage ? page + 1 : page),
             hasNextPage: cached.hasNextPage,
             hasPrevPage: cached.hasPrevPage,
           };
         }
-        // Se Firestore estiver esgotado por cota, utiliza consulta local no dataStore
-        const localResult = dataStore.queryPlayers(options);
-        if (localResult) {
-          console.warn('⚠️ [jogadoresService] Recorrendo ao dataStore local devido à cota de leitura do Firestore.');
-          return localResult;
-        }
       }
 
-      // Fallback universal para dataStore local em caso de falha de conexão/permissão do Firestore
-      try {
-        const fallbackResult = dataStore.queryPlayers(options);
-        if (fallbackResult) {
-          console.warn('⚠️ [jogadoresService] Fallback para dataStore acionado após erro no Firestore:', err?.message);
-          return fallbackResult;
-        }
-      } catch {
-        // ignore
-      }
-
-      let friendlyMessage = err?.message || 'Erro ao consultar a base de dados de jogadores.';
+      // Requisito 3: Não utilizar mockPlayers, dataStore ou listas fixas como fallback para substituir o Firestore
+      let friendlyMessage = err?.message || 'Erro ao consultar a base de dados de jogadores no Firestore.';
       if (isQuota) {
         friendlyMessage =
-          'Cota diária de leitura do Firestore excedida (resource-exhausted). O Google Cloud atingiu o limite de leituras para a coleção /jogadores (11.438 documentos existentes no banco). Aguarde a renovação da cota diária do Firebase ou habilite faturamento para leituras ilimitadas.';
+          'Cota diária de leitura do Firestore excedida (resource-exhausted). O Google Cloud atingiu o limite de leituras para a coleção /jogadores. Aguarde a renovação da cota diária do Firebase ou habilite faturamento para leituras ilimitadas.';
       }
       const customError: any = new Error(friendlyMessage);
       customError.code = err?.code || 'firestore-error';

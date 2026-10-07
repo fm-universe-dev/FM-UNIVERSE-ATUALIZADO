@@ -1167,22 +1167,38 @@ class DataStore {
       sortBy = 'overall',
       sortOrder = 'desc',
       source,
+      excludeClubId,
     } = options;
 
-    const term = search.trim().toLowerCase();
+    const normalize = (str: string) => str.toLowerCase().normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    const term = normalize(search.trim());
 
     // 1. Filtragem eficiente
     const filtered = this.players.filter((p) => {
+      if (excludeClubId && (p.clubId === excludeClubId || p.currentClubId === excludeClubId)) return false;
+
       if (term) {
-        const nameMatch =
-          p.name.toLowerCase().includes(term) ||
-          (p.fullName && p.fullName.toLowerCase().includes(term)) ||
-          (p.knownAs && p.knownAs.toLowerCase().includes(term));
-        const clubMatch = (p.clubName || '').toLowerCase().includes(term);
-        const nationalityMatch =
-          (p.nationality || '').toLowerCase().includes(term) ||
-          (p.nationalityCode || '').toLowerCase().includes(term);
-        if (!nameMatch && !clubMatch && !nationalityMatch) return false;
+        const check = (val: unknown) => {
+          if (!val) return false;
+          return normalize(String(val)).includes(term);
+        };
+
+        const matches =
+          check(p.name) ||
+          check(p.fullName) ||
+          check(p.knownAs) ||
+          check(p.clubName) ||
+          check(p.currentClubName) ||
+          check(p.fm2008_clube_origem) ||
+          check(p.originClub) ||
+          check(p.position) ||
+          check(p.nationality) ||
+          check(p.nationalityCode) ||
+          check(p.uniqueId) ||
+          check((p as any).sourceUniqueId) ||
+          check(p.id);
+
+        if (!matches) return false;
       }
 
       if (clubId && clubId !== 'ALL' && p.clubId !== clubId) return false;

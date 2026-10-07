@@ -44,11 +44,25 @@ export const MercadoPage: React.FC = () => {
   const [receivedOffers, setReceivedOffers] = useState<TransferOffer[]>([]);
   const [isLoading, setIsLoading] = useState<boolean>(false);
 
-  // Filtros e Paginação Escalável
+  // Filtros e Paginação Escalável com Busca Dinâmica no Firestore
   const [search, setSearch] = useState('');
+  const [debouncedSearch, setDebouncedSearch] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<string>('ALL');
   const [marketPage, setMarketPage] = useState<number>(1);
   const [pageSize, setPageSize] = useState<number>(25);
+  const [marketPlayers, setMarketPlayers] = useState<Player[]>([]);
+  const [totalMarketPlayers, setTotalMarketPlayers] = useState<number>(0);
+  const [totalMarketPages, setTotalMarketPages] = useState<number>(1);
+  const [isMarketLoading, setIsMarketLoading] = useState<boolean>(false);
+
+  // Requisito 2: Debounce de aproximadamente 300ms
+  useEffect(() => {
+    const handler = setTimeout(() => {
+      setDebouncedSearch(search);
+      setMarketPage(1);
+    }, 300);
+    return () => clearTimeout(handler);
+  }, [search]);
 
   // Modal de proposta inicial
   const [targetPlayer, setTargetPlayer] = useState<Player | null>(null);
@@ -72,31 +86,62 @@ export const MercadoPage: React.FC = () => {
   const [isRunningTests, setIsRunningTests] = useState(false);
   const [testResults, setTestResults] = useState<{ passed: boolean; details: string[] } | null>(null);
 
-  // Carregar todos os dados
-  const loadData = useCallback(async (overrideClub?: Club | null) => {
+  // Carregar dados de ofertas (enviadas e recebidas)
+  const loadOffers = useCallback(async (overrideClub?: Club | null) => {
     const club = overrideClub !== undefined ? overrideClub : managedClub;
     setIsLoading(true);
     try {
-      const [players, sent, received] = await Promise.all([
-        jogadoresService.getAll(),
+      const [sent, received] = await Promise.all([
         club ? transferOffersService.getOffersSent(club.id) : Promise.resolve([]),
         club ? transferOffersService.getOffersReceived(club.id) : Promise.resolve([]),
       ]);
-
-      // Atletas que não pertencem ao clube gerenciado (se houver clube gerenciado definido)
-      const availablePlayers = club
-        ? players.filter((p) => p.clubId !== club.id)
-        : players;
-
-      setAllPlayers(availablePlayers);
       setSentOffers(sent);
       setReceivedOffers(received);
     } catch (err) {
-      console.error('Erro ao carregar dados do mercado:', err);
+      console.error('Erro ao carregar ofertas do mercado:', err);
     } finally {
       setIsLoading(false);
     }
   }, [managedClub]);
+
+  // Requisitos 1, 3, 6, 7, 8, 9, 10: Busca dinâmica e paginação direto pelo Firestore via getPaginated()
+  const fetchMarketPlayers = useCallback(async () => {
+    setIsMarketLoading(true);
+    try {
+      const res = await jogadoresService.getPaginated({
+        page: marketPage,
+        pageSize,
+        search: debouncedSearch,
+        positionCategory: selectedCategory !== 'ALL' ? selectedCategory : undefined,
+        excludeClubId: managedClub?.id,
+        sortBy: 'overall',
+        sortOrder: 'desc',
+      });
+
+      setMarketPlayers(res.data);
+      setTotalMarketPlayers(res.total);
+      setTotalMarketPages(res.totalPages || Math.max(1, Math.ceil(res.total / pageSize)));
+
+      // Mantém mapa de cache de atletas para resolução de modais e propostas
+      setAllPlayers((prev) => {
+        const map = new Map<string, Player>();
+        prev.forEach((p) => map.set(p.id, p));
+        res.data.forEach((p) => map.set(p.id, p));
+        return Array.from(map.values());
+      });
+    } catch (err) {
+      console.error('Erro ao carregar jogadores paginados:', err);
+      setMarketPlayers([]);
+      setTotalMarketPlayers(0);
+      setTotalMarketPages(1);
+    } finally {
+      setIsMarketLoading(false);
+    }
+  }, [marketPage, pageSize, debouncedSearch, selectedCategory, managedClub?.id]);
+
+  const loadData = useCallback(async (overrideClub?: Club | null) => {
+    await Promise.all([loadOffers(overrideClub), fetchMarketPlayers()]);
+  }, [loadOffers, fetchMarketPlayers]);
 
   const handleClubChange = (clubId: string) => {
     setManagedClubId(clubId);
@@ -110,8 +155,12 @@ export const MercadoPage: React.FC = () => {
   };
 
   useEffect(() => {
-    loadData();
-  }, [loadData]);
+    loadOffers();
+  }, [loadOffers]);
+
+  useEffect(() => {
+    fetchMarketPlayers();
+  }, [fetchMarketPlayers]);
 
   // Sincronizar com query params ou navegação se houver (ex: ?tab=explorar | ?tab=recebidas | ?tab=enviadas)
   useEffect(() => {
@@ -130,11 +179,11 @@ export const MercadoPage: React.FC = () => {
   const handleSelectTab = useCallback(
     (tab: MercadoTab) => {
       setActiveTab(tab);
-      if (tab === 'EXPLORAR' && allPlayers.length === 0) {
-        loadData();
+      if (tab === 'EXPLORAR' && marketPlayers.length === 0) {
+        fetchMarketPlayers();
       }
     },
-    [allPlayers.length, loadData]
+    [marketPlayers.length, fetchMarketPlayers]
   );
 
   // Contadores
@@ -150,33 +199,7 @@ export const MercadoPage: React.FC = () => {
     setTimeout(() => setFeedback(null), 5000);
   };
 
-  const filteredPlayers = allPlayers.filter((p) => {
-    const q = search.trim().toLowerCase();
-    const pName = (p.name || '').toLowerCase();
-    const cName = (p.clubName || '').toLowerCase();
-    const pPos = (p.position || '').toLowerCase();
-    const pNat = (p.nationality || '').toLowerCase();
-    const matchSearch =
-      !q ||
-      pName.includes(q) ||
-      cName.includes(q) ||
-      pPos.includes(q) ||
-      pNat.includes(q);
-    const matchCat = selectedCategory === 'ALL' || p.positionCategory === selectedCategory;
-    return matchSearch && matchCat;
-  });
-
-  useEffect(() => {
-    setMarketPage(1);
-  }, [search, selectedCategory, pageSize]);
-
-  const totalMarketPages = Math.max(1, Math.ceil(filteredPlayers.length / pageSize));
-  const currentMarketPage = Math.min(Math.max(1, marketPage), totalMarketPages);
-  const marketOffset = (currentMarketPage - 1) * pageSize;
-  const paginatedMarketPlayers = filteredPlayers.slice(
-    marketOffset,
-    marketOffset + pageSize
-  );
+  const marketOffset = (marketPage - 1) * pageSize;
 
   const handleOpenProposal = async (player: Player) => {
     setTargetPlayer(player);
@@ -687,7 +710,10 @@ export const MercadoPage: React.FC = () => {
               <span className="text-xs text-slate-400">Posição Alvo:</span>
               <select
                 value={selectedCategory}
-                onChange={(e) => setSelectedCategory(e.target.value)}
+                onChange={(e) => {
+                  setSelectedCategory(e.target.value);
+                  setMarketPage(1);
+                }}
                 className="bg-slate-950 border border-slate-800 rounded-lg px-2.5 py-1.5 text-xs text-slate-200 focus:outline-none"
               >
                 <option value="ALL">Todas as Posições</option>
@@ -717,7 +743,7 @@ export const MercadoPage: React.FC = () => {
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-slate-800 font-medium">
-                  {isLoading && allPlayers.length === 0 ? (
+                  {isMarketLoading && marketPlayers.length === 0 ? (
                     <tr>
                       <td colSpan={9} className="py-12 text-center text-slate-400">
                         <RefreshCw className="w-6 h-6 animate-spin mx-auto mb-2 text-emerald-400" />
@@ -725,7 +751,7 @@ export const MercadoPage: React.FC = () => {
                         <p className="text-slate-500 text-[11px] mt-1">Buscando atletas disponíveis para negociação</p>
                       </td>
                     </tr>
-                  ) : filteredPlayers.length === 0 ? (
+                  ) : marketPlayers.length === 0 ? (
                     <tr>
                       <td colSpan={9} className="py-8 text-center text-slate-500">
                         <p>Nenhum jogador rival encontrado para os filtros selecionados.</p>
@@ -735,6 +761,7 @@ export const MercadoPage: React.FC = () => {
                             onClick={() => {
                               setSearch('');
                               setSelectedCategory('ALL');
+                              setMarketPage(1);
                             }}
                             className="mt-2 text-emerald-400 hover:underline text-xs font-semibold cursor-pointer"
                           >
@@ -744,7 +771,7 @@ export const MercadoPage: React.FC = () => {
                       </td>
                     </tr>
                   ) : (
-                    paginatedMarketPlayers.map((player) => (
+                    marketPlayers.map((player) => (
                       <tr key={player.id} className="hover:bg-slate-800/50 transition-colors">
                         <td className="py-3 px-4 whitespace-nowrap font-bold text-white">
                           {player.name}
@@ -800,15 +827,15 @@ export const MercadoPage: React.FC = () => {
             </div>
 
             {/* Pagination Controls */}
-            {filteredPlayers.length > 0 && (
+            {marketPlayers.length > 0 && (
               <div className="bg-slate-950 px-4 py-3 border-t border-slate-800 flex flex-wrap items-center justify-between gap-3 text-xs text-slate-400">
                 <div className="flex items-center gap-3">
                   <span>
                     Mostrando <strong className="text-white">{marketOffset + 1}</strong> a{' '}
                     <strong className="text-white">
-                      {Math.min(marketOffset + pageSize, filteredPlayers.length)}
+                      {marketOffset + marketPlayers.length}
                     </strong>{' '}
-                    de <strong className="text-emerald-400">{filteredPlayers.length.toLocaleString('pt-BR')}</strong> atletas
+                    de <strong className="text-emerald-400">{totalMarketPlayers.toLocaleString('pt-BR')}</strong> atletas
                   </span>
 
                   <div className="flex items-center gap-1.5 ml-2">
@@ -835,7 +862,7 @@ export const MercadoPage: React.FC = () => {
                 <div className="flex items-center gap-1.5">
                   <button
                     onClick={() => setMarketPage(1)}
-                    disabled={currentMarketPage <= 1}
+                    disabled={marketPage <= 1 || isMarketLoading}
                     className="p-1.5 rounded-lg border border-slate-800 bg-slate-900 hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors text-slate-200"
                     title="Primeira página"
                   >
@@ -844,7 +871,7 @@ export const MercadoPage: React.FC = () => {
 
                   <button
                     onClick={() => setMarketPage((prev) => Math.max(1, prev - 1))}
-                    disabled={currentMarketPage <= 1}
+                    disabled={marketPage <= 1 || isMarketLoading}
                     className="p-1.5 rounded-lg border border-slate-800 bg-slate-900 hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors text-slate-200"
                     title="Página anterior"
                   >
@@ -852,13 +879,13 @@ export const MercadoPage: React.FC = () => {
                   </button>
 
                   <span className="font-mono text-xs px-2">
-                    Página <strong className="text-white">{currentMarketPage}</strong> de{' '}
+                    Página <strong className="text-white">{marketPage}</strong> de{' '}
                     <strong className="text-slate-300">{totalMarketPages}</strong>
                   </span>
 
                   <button
                     onClick={() => setMarketPage((prev) => Math.min(totalMarketPages, prev + 1))}
-                    disabled={currentMarketPage >= totalMarketPages}
+                    disabled={marketPage >= totalMarketPages || isMarketLoading}
                     className="p-1.5 rounded-lg border border-slate-800 bg-slate-900 hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors text-slate-200"
                     title="Próxima página"
                   >
@@ -867,7 +894,7 @@ export const MercadoPage: React.FC = () => {
 
                   <button
                     onClick={() => setMarketPage(totalMarketPages)}
-                    disabled={currentMarketPage >= totalMarketPages}
+                    disabled={marketPage >= totalMarketPages || isMarketLoading}
                     className="p-1.5 rounded-lg border border-slate-800 bg-slate-900 hover:bg-slate-800 disabled:opacity-30 disabled:cursor-not-allowed transition-colors text-slate-200"
                     title="Última página"
                   >

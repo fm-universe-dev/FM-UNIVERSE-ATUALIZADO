@@ -1251,6 +1251,11 @@ export const leiloesV3Service = {
         reservedTransferBudget: currentRes + valorLance,
       });
     }
+
+    // 4. Registra leilão disputado pelo manager para a visualização "Meus Lances"
+    if (novoLance.managerId) {
+      this.registrarLeilaoDisputado(novoLance.managerId, leilaoId);
+    }
   },
 
   /**
@@ -2147,5 +2152,72 @@ export const leiloesV3Service = {
       }
       firestoreUnsub();
     };
+  },
+
+  /**
+   * Consulta os lances oficiais registrados para um leilão específico (/leiloes/{leilaoId}/lances).
+   * Prioriza Firestore se disponível; caso contrário, utiliza o cache local resiliente.
+   */
+  async buscarLancesDoLeilao(leilaoId: string): Promise<Lance[]> {
+    const local = getLocalLances(leilaoId);
+    const db = this.getDb();
+    if (!db) return local;
+
+    try {
+      const snap = await getDocs(collection(db, 'leiloes', leilaoId, 'lances'));
+      if (!snap.empty) {
+        const list: Lance[] = snap.docs.map((d) => ({
+          id: d.id,
+          leilaoId,
+          ...(d.data() as Omit<Lance, 'id'>),
+        }));
+
+        list.sort((a, b) => {
+          const valA = Number(a.value) || 0;
+          const valB = Number(b.value) || 0;
+          if (valB !== valA) return valB - valA;
+          const timeA = a.createdAt ? new Date(a.createdAt).getTime() : 0;
+          const timeB = b.createdAt ? new Date(b.createdAt).getTime() : 0;
+          return timeB - timeA;
+        });
+
+        saveLocalLances(leilaoId, list);
+        return list;
+      }
+    } catch (err) {
+      checkAndHandleQuotaError(err);
+    }
+
+    return local;
+  },
+
+  /**
+   * Registra localmente o ID do leilão em que o manager deu lance para consulta instantânea sem leituras extras
+   */
+  registrarLeilaoDisputado(managerId: string, leilaoId: string): void {
+    if (!managerId || !leilaoId || typeof window === 'undefined') return;
+    try {
+      const key = `fmu_my_bids_${managerId}`;
+      const raw = localStorage.getItem(key);
+      const set = new Set<string>(raw ? JSON.parse(raw) : []);
+      set.add(leilaoId);
+      localStorage.setItem(key, JSON.stringify(Array.from(set)));
+    } catch {
+      // ignore
+    }
+  },
+
+  /**
+   * Retorna os IDs dos leilões disputados pelo manager no histórico local
+   */
+  getLeiloesDisputadosIds(managerId: string): string[] {
+    if (!managerId || typeof window === 'undefined') return [];
+    try {
+      const key = `fmu_my_bids_${managerId}`;
+      const raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : [];
+    } catch {
+      return [];
+    }
   },
 };

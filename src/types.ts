@@ -311,6 +311,7 @@ export interface PlayerQueryOptions {
   pageSize?: number;
   search?: string;
   clubId?: string;
+  excludeClubId?: string;
   positionCategory?: string;
   position?: PlayerPosition;
   minOverall?: number;

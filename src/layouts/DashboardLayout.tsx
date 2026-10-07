@@ -16,26 +16,19 @@ import {
   Crosshair,
   DollarSign,
   Building2,
-  Briefcase,
   Search,
-  History,
-  Bell,
-  ArrowLeft,
   Calendar,
-  Smile,
-  Target,
-  Menu,
-  X,
-  ChevronRight,
-  TrendingUp,
-  Database,
-  Shield,
+  Bell,
   LogOut,
   Play,
   CheckCircle2,
   AlertTriangle,
   AlertCircle,
   Gavel,
+  Menu,
+  X,
+  Shield,
+  ExternalLink,
 } from 'lucide-react';
 
 export const DashboardLayout: React.FC<{ children: React.ReactNode }> = ({ children }) => {
@@ -82,7 +75,6 @@ export const DashboardLayout: React.FC<{ children: React.ReactNode }> = ({ child
 
     if (managedClub) {
       jogosService.getByClubId(managedClub.id).then((matches) => {
-        // Encontra a partida SCHEDULED mais antiga respeitando a ordem das rodadas
         const scheduled = matches
           .filter((m) => m.status === 'SCHEDULED')
           .sort((a, b) => a.round - b.round || a.date.localeCompare(b.date) || (a.time || '').localeCompare(b.time || ''));
@@ -123,10 +115,8 @@ export const DashboardLayout: React.FC<{ children: React.ReactNode }> = ({ child
       setRoundSummary(summary);
       setIsSummaryModalOpen(true);
 
-      // Atualiza o estado global e o clube
       await refreshClubData();
 
-      // Atualiza notificações e próximo jogo
       const notifs = await notificacoesService.getAll(managedClub.id);
       setNotifications(notifs);
 
@@ -147,20 +137,17 @@ export const DashboardLayout: React.FC<{ children: React.ReactNode }> = ({ child
     }
   };
 
-  const navOffice = [
-    { label: 'Dashboard', path: '/dashboard', icon: LayoutDashboard },
-    { label: 'Elenco', path: '/dashboard/elenco', icon: Users },
-    { label: 'Tática', path: '/dashboard/tatica', icon: Crosshair },
-    { label: 'Mercado', path: '/dashboard/mercado', icon: Search },
-    { label: 'Leilões V3', path: '/dashboard/leiloes-v3', icon: Gavel },
-    { label: 'Leilões (V2)', path: '/dashboard/leiloes', icon: Gavel },
-  ];
-
-  const navClub = [
-    { label: 'Finanças', path: '/dashboard/financas', icon: DollarSign },
-    { label: 'Estádio', path: '/dashboard/estadio', icon: Building2 },
-    { label: 'Staff', path: '/dashboard/comissao', icon: Briefcase },
-    { label: 'Histórico', path: '/dashboard/historico', icon: History },
+  // Menu canônico solicitado pelo usuário:
+  // CENTRAL | ELENCO | MERCADO | LEILÕES | FINANÇAS | TÁTICAS | CALENDÁRIO | CLUBE
+  const mainNavItems = [
+    { label: 'CENTRAL', path: '/dashboard', icon: LayoutDashboard, exact: true },
+    { label: 'ELENCO', path: '/dashboard/elenco', icon: Users },
+    { label: 'MERCADO', path: '/dashboard/mercado', icon: Search },
+    { label: 'LEILÕES', path: '/dashboard/leiloes-v3', icon: Gavel },
+    { label: 'FINANÇAS', path: '/dashboard/financas', icon: DollarSign },
+    { label: 'TÁTICAS', path: '/dashboard/tatica', icon: Crosshair },
+    { label: 'CALENDÁRIO', path: '/jogos', icon: Calendar },
+    { label: 'CLUBE', path: '/dashboard/estadio', icon: Building2 },
   ];
 
   const unreadCount = notifications.filter((n) => !n.read).length;
@@ -175,233 +162,147 @@ export const DashboardLayout: React.FC<{ children: React.ReactNode }> = ({ child
     setNotifications(notifications.map((n) => ({ ...n, read: true })));
   };
 
+  const managerDisplayName = managerProfile?.name || managedClub?.managerName || 'Treinador';
+  const managerInitial = managerDisplayName.trim().charAt(0).toUpperCase() || 'M';
+
   return (
-    <div className="min-h-screen bg-[#050505] text-white flex flex-col md:flex-row font-sans selection:bg-green-500 selection:text-black">
-      {/* Sidebar Desktop - Bento Grid Style */}
-      <aside className="hidden md:flex flex-col w-64 bg-[#0f0f0f] border-r border-[#262626] shrink-0">
-        {/* Brand Header */}
-        <div className="p-6 flex items-center gap-3">
-          <div className="w-10 h-10 bg-green-500 rounded-lg flex items-center justify-center font-bold text-xl text-black">
-            FM
-          </div>
-          <span className="text-xl font-black tracking-tighter text-white">UNIVERSE</span>
-        </div>
-
-        {/* Categorized Navigation */}
-        <nav className="flex-1 px-4 space-y-1 overflow-y-auto">
-          <div className="text-[10px] uppercase text-zinc-500 font-bold px-2 py-3 tracking-widest">
-            Escritório
-          </div>
-          {navOffice.map((item) => {
-            const isActive =
-              item.path === '/dashboard'
-                ? currentPath === '/dashboard'
-                : currentPath.startsWith(item.path);
-            const Icon = item.icon;
-            return (
-              <button
-                key={item.path}
-                onClick={() => handleNav(item.path)}
-                className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors cursor-pointer ${
-                  isActive
-                    ? 'bg-green-500/10 text-green-500 border border-green-500/20'
-                    : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
-                }`}
-              >
-                <Icon className={`w-4 h-4 ${isActive ? 'text-green-500' : 'text-zinc-400'}`} />
-                <span>{item.label}</span>
-              </button>
-            );
-          })}
-
-          <div className="text-[10px] uppercase text-zinc-500 font-bold px-2 pt-6 pb-3 tracking-widest">
-            Clube
-          </div>
-          {navClub.map((item) => {
-            const isActive = currentPath.startsWith(item.path);
-            const Icon = item.icon;
-            return (
-              <button
-                key={item.path}
-                onClick={() => handleNav(item.path)}
-                className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors cursor-pointer ${
-                  isActive
-                    ? 'bg-green-500/10 text-green-500 border border-green-500/20'
-                    : 'text-zinc-400 hover:bg-zinc-800 hover:text-zinc-200'
-                }`}
-              >
-                <Icon className={`w-4 h-4 ${isActive ? 'text-green-500' : 'text-zinc-400'}`} />
-                <span>{item.label}</span>
-              </button>
-            );
-          })}
-
-          {/* Admin section only visible when role === 'ADMIN' (hidden from MANAGER) */}
-          {role === 'ADMIN' && (
-            <>
-              <div className="text-[10px] uppercase text-purple-400 font-bold px-2 pt-6 pb-3 tracking-widest flex items-center gap-1.5">
-                <Shield className="w-3 h-3 text-purple-400" />
-                <span>Administração</span>
-              </div>
-              <button
-                onClick={() => handleNav('/admin/importar-fm26')}
-                className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-sm font-medium transition-colors cursor-pointer ${
-                  currentPath === '/admin/importar-fm26'
-                    ? 'bg-purple-600/20 text-purple-300 border border-purple-500/30 font-bold'
-                    : 'text-purple-300/80 hover:bg-purple-950/40 hover:text-white'
-                }`}
-              >
-                <Database className="w-4 h-4 text-purple-400" />
-                <span>Importar Banco FM26</span>
-              </button>
-            </>
-          )}
-        </nav>
-
-        {/* Bottom Trainer Profile Card */}
-        <div className="p-4 border-t border-[#262626] space-y-2">
-          <div className="flex items-center gap-3 p-2 bg-zinc-900 border border-zinc-800 rounded-lg">
-            <ClubBadge club={managedClub} size="sm" className="rounded-full" />
-            <div className="overflow-hidden min-w-0 flex-1">
-              <p className="text-xs font-bold truncate text-white">
-                {managerProfile?.name || managedClub?.managerName || 'Treinador'}
-              </p>
-              <p className="text-[10px] text-emerald-400 truncate font-semibold">
-                {managedClub?.name || 'Sem Clube'}
-              </p>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-2">
+    <div className="min-h-screen bg-[#07050d] text-zinc-100 flex flex-col font-sans selection:bg-purple-600 selection:text-white">
+      {/* 1. BARRA SUPERIOR FIXA — ESTILO FOOTBALL MANAGER MODERNO */}
+      <header className="sticky top-0 z-40 w-full bg-[#0d091a]/95 backdrop-blur-md border-b border-purple-900/30 shadow-xl shadow-black/40">
+        <div className="max-w-[1680px] mx-auto px-3 sm:px-6 h-16 flex items-center justify-between gap-4">
+          
+          {/* LADO ESQUERDO: Marca FM UNIVERSE */}
+          <div className="flex items-center gap-3 shrink-0">
             <button
-              onClick={() => navigate('/')}
-              className="flex-1 flex items-center justify-center gap-1.5 px-3 py-1.5 bg-zinc-900/60 hover:bg-zinc-800 text-zinc-400 hover:text-white rounded-md text-xs transition-colors border border-zinc-800/60 cursor-pointer"
+              onClick={() => handleNav('/dashboard')}
+              className="flex items-center gap-2.5 group cursor-pointer focus:outline-none"
+              title="Central de Comando FM Universe"
             >
-              <ArrowLeft className="w-3.5 h-3.5" />
-              <span>Portal</span>
-            </button>
-
-            {firebaseUser && (
-              <button
-                onClick={async () => {
-                  await logoutManager();
-                  navigate('/login');
-                }}
-                className="flex items-center justify-center gap-1.5 px-3 py-1.5 bg-red-950/30 hover:bg-red-900/50 text-red-400 hover:text-red-300 rounded-md text-xs transition-colors border border-red-500/20 cursor-pointer"
-                title="Sair da Conta"
-              >
-                <LogOut className="w-3.5 h-3.5" />
-                <span>Sair</span>
-              </button>
-            )}
-          </div>
-        </div>
-      </aside>
-
-      {/* Main Container */}
-      <div className="flex-1 flex flex-col min-w-0 overflow-hidden bg-[#050505]">
-        {/* Bento Grid Header */}
-        <header className="h-16 border-b border-[#262626] flex items-center justify-between px-4 sm:px-8 bg-[#0a0a0a] sticky top-0 z-20">
-          {/* Mobile Top Bar */}
-          <div className="flex md:hidden items-center justify-between w-full">
-            <div className="flex items-center gap-2">
-              <div className="w-7 h-7 bg-green-500 rounded flex items-center justify-center font-bold text-xs text-black">
+              <div className="w-9 h-9 rounded-xl bg-gradient-to-br from-purple-600 to-indigo-700 flex items-center justify-center font-black text-sm text-white shadow-md shadow-purple-900/40 border border-purple-400/30 group-hover:scale-105 transition-transform">
                 FM
               </div>
-              <span className="font-bold text-sm text-white truncate">{managedClub?.name || 'Sem Clube'}</span>
-            </div>
-            <div className="flex items-center gap-2">
-              <button
-                onClick={() => setNotifDropdownOpen(!notifDropdownOpen)}
-                className="relative p-2 text-zinc-400 hover:bg-zinc-800 rounded-lg cursor-pointer"
-                title="Notificações"
-              >
-                <Bell className="w-5 h-5" />
-                {unreadCount > 0 && (
-                  <span className="absolute -top-1 -right-1 px-1.5 py-0.2 min-w-[17px] text-[10px] font-extrabold bg-emerald-500 text-slate-950 rounded-full text-center shadow-lg leading-tight animate-pulse">
-                    {unreadCount}
-                  </span>
-                )}
-              </button>
-              <button
-                onClick={() => setMobileNavOpen(!mobileNavOpen)}
-                className="p-2 text-zinc-400 hover:bg-zinc-800 rounded-lg"
-              >
-                {mobileNavOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
-              </button>
-            </div>
+              <div className="flex flex-col text-left leading-none">
+                <span className="text-sm font-black tracking-widest text-white uppercase group-hover:text-purple-300 transition-colors">
+                  UNIVERSE
+                </span>
+                <span className="text-[9px] font-bold text-purple-400/80 tracking-wider uppercase">
+                  CENTRAL DO CLUBE
+                </span>
+              </div>
+            </button>
           </div>
 
-          {/* Desktop HUD Stats */}
-          <div className="hidden md:flex items-center gap-8">
-            <div className="flex flex-col">
-              <span className="text-[10px] text-zinc-500 uppercase font-bold tracking-widest">
-                Clube Atual
-              </span>
-              <span className="text-sm font-bold text-white">
-                {managedClub?.name || 'Sem Clube'}
-              </span>
-            </div>
+          {/* CENTRO: MENU HORIZONTAL MODERNO (DESKTOP) */}
+          <nav className="hidden xl:flex items-center gap-1 flex-1 justify-center max-w-4xl">
+            {mainNavItems.map((item) => {
+              const isActive = item.exact
+                ? currentPath === '/dashboard' || currentPath === '/manager'
+                : currentPath.startsWith(item.path);
+              const Icon = item.icon;
+              return (
+                <button
+                  key={item.label}
+                  onClick={() => handleNav(item.path)}
+                  className={`relative flex items-center gap-1.5 px-3.5 py-2 text-[11px] font-extrabold tracking-wider transition-all rounded-lg cursor-pointer ${
+                    isActive
+                      ? 'text-white bg-purple-600/25 border border-purple-500/40 shadow-sm shadow-purple-900/40'
+                      : 'text-zinc-300 hover:text-white hover:bg-white/5 border border-transparent'
+                  }`}
+                >
+                  <Icon className={`w-3.5 h-3.5 ${isActive ? 'text-purple-400' : 'text-zinc-400'}`} />
+                  <span>{item.label}</span>
+                  {isActive && (
+                    <span className="absolute bottom-0 left-3 right-3 h-0.5 bg-gradient-to-r from-purple-500 to-indigo-400 rounded-full" />
+                  )}
+                </button>
+              );
+            })}
 
-            <div className="flex flex-col">
-              <span className="text-[10px] text-zinc-500 uppercase font-bold tracking-widest">
-                Saldo
-              </span>
-              <span className="text-sm font-bold text-green-400 font-mono">
-                {formatCurrencyBRL(managedClub?.balance || 0, { compact: true })}
-              </span>
-            </div>
+            {/* Link extra apenas para administradores */}
+            {role === 'ADMIN' && (
+              <button
+                onClick={() => handleNav('/admin/importar-fm26')}
+                className={`flex items-center gap-1 px-2.5 py-1.5 text-[10px] font-bold uppercase rounded-lg border transition-all cursor-pointer ${
+                  currentPath.startsWith('/admin')
+                    ? 'bg-purple-950/70 text-purple-200 border-purple-700/60'
+                    : 'text-purple-400/80 hover:text-purple-200 border-purple-900/40 hover:bg-purple-950/30'
+                }`}
+                title="Painel de Administração"
+              >
+                <Shield className="w-3 h-3 text-purple-400" />
+                <span>Admin</span>
+              </button>
+            )}
+          </nav>
 
-            <div className="flex flex-col">
-              <span className="text-[10px] text-zinc-500 uppercase font-bold tracking-widest">
-                Próximo Jogo
-              </span>
-              <span className="text-sm font-bold text-white">
-                {nextMatch
-                  ? `${nextMatch.homeClubId === managedClub?.id ? nextMatch.awayClubName : nextMatch.homeClubName} (${nextMatch.homeClubId === managedClub?.id ? 'C' : 'F'})`
-                  : (managedClub ? 'Aguardando calendário' : 'Sem Jogos')}
-              </span>
-            </div>
-          </div>
-
-          {/* Right Action Tools */}
-          <div className="hidden md:flex items-center gap-4">
-            <div className="bg-zinc-900 px-3 py-1 rounded border border-zinc-800 text-xs font-mono text-zinc-300 flex items-center gap-1.5">
-              {nextMatch ? (
+          {/* LADO DIREITO: MANAGER, CLUBE, NOTIFICAÇÕES, CONTINUAR E SAIR */}
+          <div className="flex items-center gap-2.5 sm:gap-3 shrink-0">
+            {/* Botão de Rodada FM "Continuar" */}
+            <button
+              onClick={handleAdvanceRound}
+              disabled={isAdvancingRound || !hasValidMatchForClub}
+              className={`hidden sm:flex items-center gap-2 px-3.5 py-2 rounded-xl text-xs font-black uppercase tracking-wider transition-all shadow-lg cursor-pointer ${
+                !hasValidMatchForClub
+                  ? 'bg-zinc-800 text-zinc-500 border border-zinc-700/60 cursor-not-allowed opacity-80'
+                  : 'bg-gradient-to-r from-purple-600 to-indigo-600 hover:from-purple-500 hover:to-indigo-500 text-white border border-purple-400/40 shadow-purple-950/60 active:scale-95'
+              }`}
+              title={
+                !hasValidMatchForClub
+                  ? (calendarDiagnostic || 'Avanço bloqueado: Sem partida agendada.')
+                  : isPendingRound
+                  ? `Partida pendente obrigatória da Rodada ${pendingRoundNumber}`
+                  : 'Avançar para a próxima rodada da temporada'
+              }
+            >
+              {isAdvancingRound ? (
                 <>
-                  {isPendingRound && <span className="w-1.5 h-1.5 rounded-full bg-amber-400 animate-pulse" title="Partida Pendente Obrigatória" />}
-                  <span>{nextMatch.date}</span>
+                  <div className="w-3 h-3 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                  <span>Processando...</span>
+                </>
+              ) : !hasValidMatchForClub ? (
+                <>
+                  <AlertCircle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+                  <span>Sem Jogo (R{pendingRoundNumber})</span>
                 </>
               ) : (
-                <span>{managedClub ? 'Temporada Oficial' : '-'}</span>
+                <>
+                  <Play className="w-3.5 h-3.5 fill-white text-white" />
+                  <span>Continuar</span>
+                  <span className="px-1.5 py-0.5 rounded text-[10px] font-mono bg-black/30 text-purple-200 font-bold border border-white/10">
+                    R{pendingRoundNumber}
+                  </span>
+                </>
               )}
-            </div>
+            </button>
 
-            {/* Notification Bell */}
+            {/* Notificações com Dropdown */}
             <div className="relative">
               <button
                 onClick={() => setNotifDropdownOpen(!notifDropdownOpen)}
-                className="relative p-1.5 text-zinc-400 hover:text-white hover:bg-zinc-800 rounded-lg transition-colors cursor-pointer"
-                title="Notificações"
+                className="relative p-2 text-zinc-300 hover:text-white bg-purple-950/30 hover:bg-purple-900/40 rounded-xl border border-purple-800/30 transition-colors cursor-pointer"
+                title="Notificações do Clube"
               >
-                <Bell className="w-4 h-4" />
+                <Bell className="w-4 h-4 text-purple-300" />
                 {unreadCount > 0 && (
-                  <span className="absolute -top-1.5 -right-1.5 px-1.5 py-0.2 min-w-[16px] text-[10px] font-black bg-emerald-500 text-slate-950 rounded-full text-center shadow-md leading-tight animate-pulse">
+                  <span className="absolute -top-1 -right-1 px-1.5 py-0.2 min-w-[17px] text-[10px] font-black bg-purple-500 text-white rounded-full text-center shadow-lg leading-tight animate-pulse border border-[#0d091a]">
                     {unreadCount}
                   </span>
                 )}
               </button>
 
-              {/* Notification Dropdown */}
+              {/* Dropdown de Notificações */}
               {notifDropdownOpen && (
-                <div className="absolute right-0 mt-2 w-80 bg-[#121212] border border-[#262626] rounded-xl shadow-2xl p-3 z-50 text-xs">
-                  <div className="flex items-center justify-between pb-2 mb-2 border-b border-zinc-800">
-                    <span className="font-bold text-white">Notificações</span>
+                <div className="absolute right-0 mt-2 w-80 sm:w-96 bg-[#110d22] border border-purple-800/40 rounded-2xl shadow-2xl shadow-black/80 p-3.5 z-50 text-xs">
+                  <div className="flex items-center justify-between pb-2.5 mb-2.5 border-b border-purple-900/30">
+                    <span className="font-extrabold text-white text-sm flex items-center gap-2">
+                      <Bell className="w-3.5 h-3.5 text-purple-400" />
+                      <span>Notificações</span>
+                    </span>
                     <div className="flex items-center gap-2">
                       {unreadCount > 0 && (
                         <button
                           onClick={markAllRead}
-                          className="text-[10px] text-green-400 hover:underline cursor-pointer"
+                          className="text-[11px] text-purple-300 hover:text-purple-200 hover:underline cursor-pointer"
                         >
                           Marcar lidas
                         </button>
@@ -411,19 +312,20 @@ export const DashboardLayout: React.FC<{ children: React.ReactNode }> = ({ child
                           setNotifDropdownOpen(false);
                           setIsCenterModalOpen(true);
                         }}
-                        className="text-[10px] text-emerald-400 font-bold hover:underline cursor-pointer"
+                        className="text-[11px] text-purple-400 font-bold hover:underline cursor-pointer"
                       >
                         Ver Central
                       </button>
                     </div>
                   </div>
-                  <div className="space-y-2 max-h-64 overflow-y-auto">
+
+                  <div className="space-y-2 max-h-72 overflow-y-auto pr-1">
                     {notifications.length === 0 ? (
-                      <div className="py-4 text-center text-zinc-500 text-[11px]">
-                        Nenhuma notificação registrada.
+                      <div className="py-6 text-center text-zinc-500 text-xs">
+                        Nenhuma notificação recente.
                       </div>
                     ) : (
-                      notifications.map((n) => (
+                      notifications.slice(0, 10).map((n) => (
                         <div
                           key={n.id}
                           onClick={() => {
@@ -445,163 +347,115 @@ export const DashboardLayout: React.FC<{ children: React.ReactNode }> = ({ child
                               setNotifDropdownOpen(false);
                             }
                           }}
-                          className={`p-2 rounded-lg border transition-colors cursor-pointer ${
+                          className={`p-2.5 rounded-xl border transition-all cursor-pointer ${
                             n.read
-                              ? 'bg-zinc-900/50 hover:bg-zinc-900 border-zinc-800/60 text-zinc-400'
-                              : 'bg-zinc-800/70 hover:bg-zinc-800 border-zinc-700 text-zinc-200'
+                              ? 'bg-zinc-900/40 hover:bg-zinc-900 border-zinc-800/60 text-zinc-400'
+                              : 'bg-purple-950/40 hover:bg-purple-900/40 border-purple-700/50 text-zinc-200'
                           }`}
                         >
-                          <div className="flex justify-between font-semibold text-white mb-0.5">
+                          <div className="flex justify-between font-bold text-white mb-0.5">
                             <span className="flex items-center gap-1.5 truncate">
                               {(n.leilaoId || n.type === 'AUCTION_BID') && (
                                 <Gavel className="w-3.5 h-3.5 text-amber-400 shrink-0" />
                               )}
                               <span>{n.title}</span>
                             </span>
-                            <span className="text-[10px] text-zinc-500 shrink-0 ml-1">{n.date}</span>
+                            <span className="text-[10px] text-zinc-500 shrink-0 ml-1 font-mono">{n.date}</span>
                           </div>
-                          <p className="text-[11px] text-zinc-300 whitespace-pre-line">{n.message}</p>
-                          {(n.leilaoId || n.type === 'AUCTION_BID') && (
-                            <div className="mt-1.5 flex justify-end">
-                              <span className="text-[10px] text-amber-400 font-bold flex items-center gap-1 bg-amber-500/10 px-2 py-0.5 rounded border border-amber-500/20">
-                                <Gavel className="w-3 h-3" />
-                                <span>Ver leilão</span>
-                              </span>
-                            </div>
-                          )}
+                          <p className="text-[11px] text-zinc-300 line-clamp-2">{n.message}</p>
                         </div>
                       ))
                     )}
                   </div>
-                  <div className="mt-2 pt-2 border-t border-zinc-800 text-center">
+
+                  <div className="mt-3 pt-2.5 border-t border-purple-900/30 text-center">
                     <button
                       onClick={() => {
                         setNotifDropdownOpen(false);
                         setIsCenterModalOpen(true);
                       }}
-                      className="w-full py-1.5 bg-zinc-900 hover:bg-zinc-800 text-emerald-400 hover:text-emerald-300 rounded text-[11px] font-bold transition-colors cursor-pointer"
+                      className="w-full py-2 bg-purple-900/40 hover:bg-purple-800/50 text-purple-200 rounded-xl text-xs font-bold transition-colors cursor-pointer border border-purple-700/40"
                     >
-                      Abrir Central de Notificações
+                      Abrir Central Completa
                     </button>
                   </div>
                 </div>
               )}
             </div>
 
+            {/* Perfil do Manager & Clube Atual */}
+            <div className="flex items-center gap-2.5 pl-2 sm:pl-3 border-l border-purple-900/30">
+              {/* Avatar do Manager */}
+              <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-purple-700 to-indigo-500 border border-purple-300/40 flex items-center justify-center text-xs font-black text-white shadow-md shadow-purple-950/60 shrink-0">
+                {managerInitial}
+              </div>
+
+              {/* Informações de Texto do Treinador e Clube */}
+              <div className="hidden md:flex flex-col text-left leading-tight min-w-0 max-w-[160px]">
+                <span className="text-xs font-bold text-white truncate">
+                  {managerDisplayName}
+                </span>
+                <span className="text-[10px] font-extrabold text-purple-400 truncate flex items-center gap-1">
+                  <ClubBadge club={managedClub} size="xs" className="shrink-0" />
+                  <span className="truncate">{managedClub?.name || 'Sem Clube'}</span>
+                </span>
+              </div>
+            </div>
+
+            {/* Botão de Sair */}
+            {firebaseUser && (
+              <button
+                onClick={async () => {
+                  await logoutManager();
+                  navigate('/login');
+                }}
+                className="flex items-center justify-center p-2 rounded-xl text-zinc-400 hover:text-rose-300 bg-zinc-900/60 hover:bg-rose-950/40 border border-zinc-800 hover:border-rose-900/40 transition-colors cursor-pointer"
+                title="Sair da Conta (Logout)"
+              >
+                <LogOut className="w-4 h-4" />
+              </button>
+            )}
+
+            {/* Mobile Menu Toggle Button */}
             <button
-              onClick={handleAdvanceRound}
-              disabled={isAdvancingRound || !hasValidMatchForClub}
-              className={`px-4 py-1.5 rounded text-xs font-bold transition-all uppercase tracking-tight flex items-center gap-1.5 shadow-md ${
-                !hasValidMatchForClub
-                  ? 'bg-zinc-800/90 text-zinc-400 border border-zinc-700/80 cursor-not-allowed opacity-90'
-                  : 'bg-green-600 hover:bg-green-500 disabled:opacity-60 disabled:cursor-not-allowed text-black cursor-pointer hover:shadow-green-500/20 active:scale-95'
-              }`}
-              title={
-                !hasValidMatchForClub
-                  ? (calendarDiagnostic || 'Avanço bloqueado: Não há partida agendada no calendário oficial para o seu clube.')
-                  : isPendingRound
-                  ? `Partida pendente obrigatória da Rodada ${pendingRoundNumber}. O avanço além desta rodada está bloqueado.`
-                  : 'Avançar rodada da temporada no FM Universe'
-              }
+              onClick={() => setMobileNavOpen(!mobileNavOpen)}
+              className="xl:hidden p-2 text-zinc-300 hover:text-white bg-purple-950/40 rounded-xl border border-purple-800/40"
+              title="Menu de Navegação"
             >
-              {isAdvancingRound ? (
-                <>
-                  <div className="w-3 h-3 border-2 border-black border-t-transparent rounded-full animate-spin" />
-                  <span>Processando...</span>
-                </>
-              ) : !hasValidMatchForClub ? (
-                <>
-                  <AlertCircle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                  <span>Sem Jogo (R{pendingRoundNumber})</span>
-                </>
-              ) : (
-                <>
-                  <Play className="w-3 h-3 fill-black text-black" />
-                  <span>Continuar</span>
-                  <span className={`px-1 py-0.5 rounded text-[10px] font-mono leading-none ${
-                    isPendingRound ? 'bg-amber-400 text-black font-black' : 'bg-black/20'
-                  }`}>
-                    R{pendingRoundNumber}{isPendingRound ? ' • Pendente' : ''}
-                  </span>
-                </>
-              )}
+              {mobileNavOpen ? <X className="w-5 h-5" /> : <Menu className="w-5 h-5" />}
             </button>
           </div>
+        </div>
 
-          {/* Banner de feedback caso ocorra algum erro ou bloqueio */}
-          {advanceFeedback && (
-            <div
-              className={`absolute top-16 right-4 z-40 px-4 py-2.5 rounded-xl border text-xs flex items-center gap-2 shadow-2xl animate-in slide-in-from-top duration-200 ${
-                advanceFeedback.type === 'error'
-                  ? 'bg-rose-950/95 border-rose-800 text-rose-200'
-                  : 'bg-emerald-950/95 border-emerald-800 text-emerald-200'
-              }`}
-            >
-              {advanceFeedback.type === 'error' ? (
-                <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
-              ) : (
-                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
-              )}
-              <span className="font-medium">{advanceFeedback.message}</span>
+        {/* MENU RESPONSIVO MOBILE / TABLET */}
+        {mobileNavOpen && (
+          <div className="xl:hidden bg-[#0e0a1f] border-t border-purple-900/30 px-4 py-3 space-y-2 shadow-2xl">
+            {/* Mobile Continue Round button */}
+            <div className="pb-2 border-b border-purple-900/30 sm:hidden">
               <button
-                onClick={() => setAdvanceFeedback(null)}
-                className="ml-2 text-slate-400 hover:text-white"
+                onClick={handleAdvanceRound}
+                disabled={isAdvancingRound || !hasValidMatchForClub}
+                className="w-full flex items-center justify-center gap-2 py-2.5 rounded-xl bg-purple-600 hover:bg-purple-500 text-white font-black text-xs uppercase"
               >
-                <X className="w-3.5 h-3.5" />
+                <Play className="w-3.5 h-3.5 fill-white" />
+                <span>Continuar (Rodada {pendingRoundNumber})</span>
               </button>
             </div>
-          )}
 
-          {/* Mobile Drawer */}
-          {mobileNavOpen && (
-            <div className="md:hidden absolute top-16 left-0 right-0 bg-[#0f0f0f] border-b border-[#262626] px-4 py-3 space-y-1 z-30 shadow-2xl">
-              <div className="p-2">
-                <button
-                  onClick={handleAdvanceRound}
-                  disabled={isAdvancingRound || !hasValidMatchForClub}
-                  className={`w-full px-4 py-2.5 rounded-lg text-xs font-bold transition-all uppercase tracking-tight flex items-center justify-center gap-2 ${
-                    !hasValidMatchForClub
-                      ? 'bg-zinc-800/90 text-zinc-400 border border-zinc-700/80 cursor-not-allowed opacity-90'
-                      : 'bg-green-600 hover:bg-green-500 disabled:opacity-60 text-black cursor-pointer'
-                  }`}
-                >
-                  {isAdvancingRound ? (
-                    <>
-                      <div className="w-3.5 h-3.5 border-2 border-black border-t-transparent rounded-full animate-spin" />
-                      <span>Processando Rodada...</span>
-                    </>
-                  ) : !hasValidMatchForClub ? (
-                    <>
-                      <AlertCircle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
-                      <span>Sem Jogo Válido (R{pendingRoundNumber})</span>
-                    </>
-                  ) : (
-                    <>
-                      <Play className="w-3.5 h-3.5 fill-black text-black" />
-                      <span>
-                        Continuar (Avançar Rodada {pendingRoundNumber}
-                        {isPendingRound ? ' • Pendente' : ''})
-                      </span>
-                    </>
-                  )}
-                </button>
-              </div>
-
-              <div className="text-[10px] uppercase text-zinc-500 font-bold px-2 py-1">Escritório</div>
-              {navOffice.map((item) => {
-                const isActive =
-                  item.path === '/dashboard'
-                    ? currentPath === '/dashboard'
-                    : currentPath.startsWith(item.path);
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              {mainNavItems.map((item) => {
+                const isActive = item.exact
+                  ? currentPath === '/dashboard' || currentPath === '/manager'
+                  : currentPath.startsWith(item.path);
                 const Icon = item.icon;
                 return (
                   <button
-                    key={item.path}
+                    key={item.label}
                     onClick={() => handleNav(item.path)}
-                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-xs font-medium ${
+                    className={`flex items-center gap-2 p-2.5 rounded-xl text-xs font-bold transition-all ${
                       isActive
-                        ? 'bg-green-500/10 text-green-500 border border-green-500/20 font-bold'
-                        : 'text-zinc-400 hover:bg-zinc-800'
+                        ? 'bg-purple-600 text-white shadow-md'
+                        : 'bg-zinc-900/60 text-zinc-300 hover:bg-purple-950/40'
                     }`}
                   >
                     <Icon className="w-4 h-4" />
@@ -609,79 +463,70 @@ export const DashboardLayout: React.FC<{ children: React.ReactNode }> = ({ child
                   </button>
                 );
               })}
-              <div className="text-[10px] uppercase text-zinc-500 font-bold px-2 pt-2">Clube</div>
-              {navClub.map((item) => {
-                const isActive = currentPath.startsWith(item.path);
-                const Icon = item.icon;
-                return (
-                  <button
-                    key={item.path}
-                    onClick={() => handleNav(item.path)}
-                    className={`w-full flex items-center gap-3 px-3 py-2 rounded-md text-xs font-medium ${
-                      isActive
-                        ? 'bg-green-500/10 text-green-500 border border-green-500/20 font-bold'
-                        : 'text-zinc-400 hover:bg-zinc-800'
-                    }`}
-                  >
-                    <Icon className="w-4 h-4" />
-                    <span>{item.label}</span>
-                  </button>
-                );
-              })}
-
-              {/* Admin section for mobile when role === 'ADMIN' */}
-              {role === 'ADMIN' && (
-                <>
-                  <div className="text-[10px] uppercase text-purple-400 font-bold px-2 pt-2 flex items-center gap-1.5">
-                    <Shield className="w-3 h-3 text-purple-400" />
-                    <span>Administração</span>
-                  </div>
-                  <button
-                    onClick={() => handleNav('/admin/importar-fm26')}
-                    className="w-full flex items-center gap-3 px-3 py-2 rounded-md text-xs font-medium text-purple-300 hover:bg-purple-950/40"
-                  >
-                    <Database className="w-4 h-4 text-purple-400" />
-                    <span>Importar Banco FM26</span>
-                  </button>
-                </>
-              )}
-              <div className="pt-2 border-t border-[#262626]">
-                <button
-                  onClick={() => navigate('/')}
-                  className="w-full flex items-center justify-center gap-2 px-3 py-2 bg-zinc-900 text-zinc-300 rounded-md text-xs"
-                >
-                  <ArrowLeft className="w-3.5 h-3.5" />
-                  <span>Voltar ao Portal Público</span>
-                </button>
-              </div>
             </div>
+
+            {role === 'ADMIN' && (
+              <div className="pt-2 border-t border-purple-900/30">
+                <button
+                  onClick={() => handleNav('/admin/importar-fm26')}
+                  className="w-full flex items-center justify-center gap-2 p-2 rounded-xl text-xs font-bold text-purple-300 bg-purple-950/60 border border-purple-800/40"
+                >
+                  <Shield className="w-3.5 h-3.5" />
+                  <span>Painel do Administrador (Importação FM26)</span>
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+      </header>
+
+      {/* Banner de feedback do Motor de Temporada */}
+      {advanceFeedback && (
+        <div
+          className={`fixed top-20 right-6 z-50 px-4 py-3 rounded-2xl border text-xs flex items-center gap-2 shadow-2xl backdrop-blur-md animate-in slide-in-from-top duration-200 ${
+            advanceFeedback.type === 'error'
+              ? 'bg-rose-950/95 border-rose-800 text-rose-200'
+              : 'bg-emerald-950/95 border-emerald-800 text-emerald-200'
+          }`}
+        >
+          {advanceFeedback.type === 'error' ? (
+            <AlertTriangle className="w-4 h-4 text-rose-400 shrink-0" />
+          ) : (
+            <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
           )}
-        </header>
+          <span className="font-semibold">{advanceFeedback.message}</span>
+          <button
+            onClick={() => setAdvanceFeedback(null)}
+            className="ml-2 text-zinc-400 hover:text-white"
+          >
+            <X className="w-3.5 h-3.5" />
+          </button>
+        </div>
+      )}
 
-        {/* Dynamic Outlet */}
-        <main className="flex-1 p-4 sm:p-6 overflow-y-auto max-w-7xl w-full mx-auto">
-          {children}
-        </main>
+      {/* 2. ÁREA DE CONTEÚDO PRINCIPAL (OCUPA TODA A TELA) */}
+      <main className="flex-1 w-full max-w-[1680px] mx-auto p-3 sm:p-5 lg:p-6 overflow-y-auto">
+        {children}
+      </main>
 
-        {/* Modal Oficial de Resumo da Rodada (Motor de Temporada FM Universe) */}
-        <RoundSummaryModal
-          data={roundSummary}
-          isOpen={isSummaryModalOpen}
-          onClose={() => {
-            setIsSummaryModalOpen(false);
-            refreshClubData();
-          }}
-        />
+      {/* Modal Oficial de Resumo da Rodada (Motor de Temporada FM Universe) */}
+      <RoundSummaryModal
+        data={roundSummary}
+        isOpen={isSummaryModalOpen}
+        onClose={() => {
+          setIsSummaryModalOpen(false);
+          refreshClubData();
+        }}
+      />
 
-        {/* Central de Notificações Modal */}
-        <NotificationCenterModal
-          isOpen={isCenterModalOpen}
-          onClose={() => setIsCenterModalOpen(false)}
-          notifications={notifications}
-          clubId={managedClub?.id}
-          onRefresh={() => notificacoesService.getAll(managedClub?.id).then(setNotifications)}
-        />
-      </div>
+      {/* Central de Notificações Modal */}
+      <NotificationCenterModal
+        isOpen={isCenterModalOpen}
+        onClose={() => setIsCenterModalOpen(false)}
+        notifications={notifications}
+        clubId={managedClub?.id}
+        onRefresh={() => notificacoesService.getAll(managedClub?.id).then(setNotifications)}
+      />
     </div>
   );
 };
