@@ -29,6 +29,7 @@ export const OFFICIAL_10_CLUBS = [
   { id: 'club-qBMw9GdVuiVkBB22ZJwVoW1uEXG3', name: 'Nós Travamos' },
   { id: 'club-qowYWnG0EfUqrr1a5cHlu4UYmNB3', name: 'Thales FC' },
   { id: 'club-zmm8RxW9iyXIpW5g0hWeqNiPlt12', name: 'NinguemSegura FC' },
+  { id: 'club-1', name: 'FM United' },
 ] as const;
 
 export interface OfficialClubBalanceStatus {
@@ -459,16 +460,17 @@ export const sistemaFinanceiroService = {
 
     const writeErrors: Record<string, string> = {};
 
-    // 1. Gravação direta de { balance: 600000000 } nos 10 clubes
+    // 1. Gravação direta de { balance: 600000000, transferBudget: 600000000 } nos clubes oficiais
     for (const c of OFFICIAL_10_CLUBS) {
       try {
         const clubRef = doc(db, 'clubes', c.id);
-        // updateDoc envia ESTRITAMENTE o campo balance para o Firestore
+        // updateDoc envia ESTRITAMENTE balance e transferBudget, preservando reservedTransferBudget intacto
         await updateDoc(clubRef, {
           balance: INITIAL_SEASON_CASH,
+          transferBudget: INITIAL_SEASON_CASH,
         });
       } catch (err: any) {
-        console.error(`❌ [sistemaFinanceiro] Erro ao gravar balance no Firestore para ${c.name} (${c.id}):`, err);
+        console.error(`❌ [sistemaFinanceiro] Erro ao gravar balance/transferBudget no Firestore para ${c.name} (${c.id}):`, err);
         writeErrors[c.id] = err?.message || 'Falha ao atualizar documento no Firestore.';
       }
     }
@@ -519,7 +521,7 @@ export const sistemaFinanceiroService = {
         const verifiedTransfer = Number(data.transferBudget ?? 0);
         const verifiedReserved = Number(data.reservedTransferBudget ?? 0);
 
-        const isExactBalance = verifiedBal === INITIAL_SEASON_CASH;
+        const isExactBalance = verifiedBal === INITIAL_SEASON_CASH && verifiedTransfer === INITIAL_SEASON_CASH;
         if (!isExactBalance) {
           hasFailures = true;
         }
@@ -531,7 +533,7 @@ export const sistemaFinanceiroService = {
           transferBudget: verifiedTransfer,
           reservedTransferBudget: verifiedReserved,
           success: isExactBalance,
-          error: isExactBalance ? undefined : `Saldo lido no Firestore (${verifiedBal}) difere de 600.000.000.`,
+          error: isExactBalance ? undefined : `Saldo lido no Firestore (${verifiedBal}) ou orçamento (${verifiedTransfer}) difere de 600.000.000.`,
         });
       } catch (rErr: any) {
         hasFailures = true;
@@ -549,13 +551,14 @@ export const sistemaFinanceiroService = {
 
     const successCount = verifiedList.filter((r) => r.success).length;
 
-    // Se houve sucesso completo em todos os 10, atualiza o cache local para refletir a nova realidade
+    // Se houve sucesso completo em todos os clubes, atualiza o cache local para refletir a nova realidade
     if (!hasFailures && successCount === OFFICIAL_10_CLUBS.length) {
       try {
         verifiedList.forEach((item) => {
           const club = dataStore.getClubById(item.clubId);
           if (club) {
             club.balance = INITIAL_SEASON_CASH;
+            club.transferBudget = INITIAL_SEASON_CASH;
             dataStore.saveClub(club);
           }
         });

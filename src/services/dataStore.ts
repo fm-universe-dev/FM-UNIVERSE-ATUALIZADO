@@ -158,6 +158,39 @@ class DataStore {
       } catch {
         // ignore
       }
+
+      // Padronização oficial da temporada FM Universe: todos os clubes oficiais possuem R$ 600.000.000 de caixa inicial
+      let updatedAnyFinancial = false;
+      this.clubs.forEach((c) => {
+        const isOfficial =
+          c.id === 'club-1' ||
+          c.id === 'club-NKijWNgl4ORYGpkESx1nvBLQpBx1' ||
+          c.id === 'club-qowYWnG0EfUqrr1a5cHlu4UYmNB3' ||
+          c.id === 'club-XTEQSFH1x9To3EuVESp54vCCFTf2' ||
+          c.id === 'club-qBMw9GdVuiVkBB22ZJwVoW1uEXG3' ||
+          c.id === 'club-3dOrJ03rdGYipkflIjziZx8fd6d2' ||
+          c.id === 'club-zmm8RxW9iyXIpW5g0hWeqNiPlt12' ||
+          c.id === 'club-1E32eakvLtgxhAXhdGBdbCsKeg52' ||
+          c.id === 'club-BkeFN9NYE2d1L27hJ63L2LWrL3c2' ||
+          c.id === 'club-CqUHZEVlVmMcUHXsYAExPP7SQuQ2' ||
+          c.id === 'club-RrsKw1Z17HgSQvKrSsp6Cr38SFk2' ||
+          c.name === "Mutant's" ||
+          c.name === 'Ninja FC' ||
+          c.name === 'Thales FC' ||
+          c.name === 'FM United';
+
+        if (isOfficial) {
+          if (c.balance !== 600000000 || c.transferBudget !== 600000000) {
+            c.balance = 600000000;
+            c.transferBudget = 600000000;
+            c.reservedTransferBudget = typeof c.reservedTransferBudget === 'number' ? c.reservedTransferBudget : 0;
+            updatedAnyFinancial = true;
+          }
+        }
+      });
+      if (updatedAnyFinancial) {
+        this.saveToStorage(STORAGE_KEYS.CLUBS, this.clubs);
+      }
       this.competitions = this.loadFromStorage(STORAGE_KEYS.COMPETITIONS, mockCompetitions);
       this.players = this.loadFromStorage(STORAGE_KEYS.PLAYERS, mockPlayers);
       // Garante a presença dos atletas base FM2008 mesmo se houver cache prévio
@@ -636,26 +669,10 @@ class DataStore {
         club.managerId = realManagerUid;
         club.managerName = 'Rodrigo Mariano';
 
-        // Preserva valores financeiros persistidos, sem restaurar indevidamente para R$ 45.000.000.
-        // Se a contratação de Gabriel Morales (R$ 1.300.000) foi liquidada:
-        // - transferBudget reflete R$ 43.700.000
-        // - balance reflete o débito efetivo da contratação (R$ 43.700.000)
-        // - reservedTransferBudget permanece em R$ 0
-        const currentBudget = typeof club.transferBudget === 'number' ? club.transferBudget : 45000000;
-        const currentBalance = typeof club.balance === 'number' ? club.balance : currentBudget;
-
-        // Se o transferBudget já foi deduzido (<= 43.700.000), o balance deve acompanhar o débito efetivo
-        if (currentBudget <= 43700000) {
-          club.transferBudget = currentBudget;
-          club.balance = currentBalance <= currentBudget ? currentBalance : currentBudget;
-        } else {
-          // Se ainda constava em 45.000.000 por sobrescrita anterior, aplica o débito exato de 1.300.000
-          club.transferBudget = 43700000;
-          club.balance = 43700000;
-        }
-
-        // reservedTransferBudget deve permanecer em R$ 0 após a liquidação
-        club.reservedTransferBudget = 0;
+        // Padronização oficial da temporada FM Universe: R$ 600.000.000
+        club.transferBudget = 600000000;
+        club.balance = 600000000;
+        club.reservedTransferBudget = typeof club.reservedTransferBudget === 'number' ? club.reservedTransferBudget : 0;
       } else {
         const ninja = mockClubs.find((c) => c.name === 'Ninja FC');
         if (ninja) {
@@ -664,8 +681,8 @@ class DataStore {
             id: ninjaClubId,
             managerId: realManagerUid,
             managerName: 'Rodrigo Mariano',
-            transferBudget: 43700000,
-            balance: 43700000,
+            transferBudget: 600000000,
+            balance: 600000000,
             reservedTransferBudget: 0,
           };
           this.clubs.push(club);

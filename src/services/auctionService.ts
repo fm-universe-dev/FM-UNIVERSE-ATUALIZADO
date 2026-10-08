@@ -1051,7 +1051,8 @@ export const auctionService = {
    */
   async getClubAuctionBudget(clubId: string): Promise<AuctionBudgetSummary> {
     const club = await clubesService.getById(clubId);
-    const total = Number(club?.transferBudget) || Number(club?.balance) || 0;
+    // Caixa oficial (balance) é a fonte principal
+    const total = Number(club?.balance ?? club?.transferBudget ?? 600000000);
     let reserved = Number(club?.reservedTransferBudget) || 0;
 
     const db = getFirestoreDb() || firestoreDb;

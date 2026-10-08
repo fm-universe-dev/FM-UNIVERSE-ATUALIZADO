@@ -112,11 +112,22 @@ function saveLocalCachedClubs(clubs: Club[]): void {
 }
 
 function ensureClubPreparation(club: Club): Club {
-  if (club.id === 'club-qowYWnG0EfUqrr1a5cHlu4UYmNB3') {
+  // Padronização oficial da temporada FM Universe: todos os clubes oficiais possuem R$ 600.000.000
+  const isOfficial =
+    CANONICAL_CLUB_IDS.has(club.id) ||
+    club.id === 'club-1' ||
+    club.id === 'club-1E32eakvLtgxhAXhdGBdbCsKeg52' ||
+    club.id === 'club-BkeFN9NYE2d1L27hJ63L2LWrL3c2' ||
+    club.id === 'club-CqUHZEVlVmMcUHXsYAExPP7SQuQ2' ||
+    club.id === 'club-RrsKw1Z17HgSQvKrSsp6Cr38SFk2';
+
+  if (isOfficial) {
     return {
       ...club,
-      balance: typeof club.balance === 'number' ? club.balance : 20000000,
-      capacity: club.capacity || 75000,
+      balance: 600000000,
+      transferBudget: 600000000,
+      reservedTransferBudget: typeof club.reservedTransferBudget === 'number' ? club.reservedTransferBudget : 0,
+      capacity: club.id === 'club-qowYWnG0EfUqrr1a5cHlu4UYmNB3' ? (club.capacity || 75000) : club.capacity,
     };
   }
   return club;
@@ -496,9 +507,9 @@ export const clubesService = {
       stadiumImageUrl: clubData.stadiumImageUrl || '',
       capacity: clubData.capacity || 42000,
       reputation: 3,
-      transferBudget: 45000000,
+      transferBudget: 600000000,
       wageBudget: 4500000,
-      balance: 45000000,
+      balance: 600000000,
       managerId: cleanUid,
       managerName: managerName || 'Treinador',
       squadCount: 0,
@@ -1044,9 +1055,9 @@ export const clubesService = {
         stadiumName: 'Arena Thales',
         capacity: 75000,
         reputation: 86,
-        transferBudget: 20000000,
+        transferBudget: 600000000,
         wageBudget: 4500000,
-        balance: 20000000,
+        balance: 600000000,
         managerId: 'mgr-thales-henrique',
         managerName: 'Thales Henrique',
         squadCount: 24,
@@ -1070,9 +1081,9 @@ export const clubesService = {
         stadiumName: 'Arena Ninja',
         capacity: 50000,
         reputation: 85,
-        transferBudget: 45000000,
+        transferBudget: 600000000,
         wageBudget: 4000000,
-        balance: 45000000,
+        balance: 600000000,
         managerId: 'NKijWNgl4ORYGpkESx1nvBLQpBx1',
         managerName: 'Rodrigo Mariano',
         squadCount: 22,
@@ -1096,9 +1107,9 @@ export const clubesService = {
         stadiumName: "Arena Mutant's",
         capacity: 52000,
         reputation: 84,
-        transferBudget: 35000000,
+        transferBudget: 600000000,
         wageBudget: 3500000,
-        balance: 35000000,
+        balance: 600000000,
         managerId: 'XTEQSFH1x9To3EuVESp54vCCFTf2',
         managerName: 'Igor Vicente',
         squadCount: 22,
@@ -1122,9 +1133,9 @@ export const clubesService = {
         stadiumName: 'Arena Travamos',
         capacity: 48000,
         reputation: 83,
-        transferBudget: 30000000,
+        transferBudget: 600000000,
         wageBudget: 3200000,
-        balance: 30000000,
+        balance: 600000000,
         managerId: 'qBMw9GdVuiVkBB22ZJwVoW1uEXG3',
         managerName: 'Leandro Vicente',
         squadCount: 22,
@@ -1148,9 +1159,9 @@ export const clubesService = {
         stadiumName: 'Estádio Morumbi Brasil',
         capacity: 67000,
         reputation: 85,
-        transferBudget: 40000000,
+        transferBudget: 600000000,
         wageBudget: 3800000,
-        balance: 40000000,
+        balance: 600000000,
         managerId: '3dOrJ03rdGYipkflIjziZx8fd6d2',
         managerName: 'Thales Henrique',
         squadCount: 23,
@@ -1174,9 +1185,9 @@ export const clubesService = {
         stadiumName: 'Arena Ninguém Segura',
         capacity: 55000,
         reputation: 85,
-        transferBudget: 42000000,
+        transferBudget: 600000000,
         wageBudget: 3900000,
-        balance: 42000000,
+        balance: 600000000,
         managerId: 'zmm8RxW9iyXIpW5g0hWeqNiPlt12',
         managerName: 'Rodrigo Mariano',
         squadCount: 23,
@@ -1187,6 +1198,31 @@ export const clubesService = {
         seasonTarget: 'G4 da Liga FM Universe',
         leaguePosition: 1,
         trophiesCount: 4,
+        foundedYear: 2024,
+      },
+      {
+        id: 'club-1',
+        name: 'FM United',
+        slug: 'fm-united',
+        shortName: 'FMU',
+        code: 'FMU',
+        badge: '⚡',
+        stadiumId: 'stad-1',
+        stadiumName: 'Arena FM',
+        capacity: 54200,
+        reputation: 85,
+        transferBudget: 600000000,
+        wageBudget: 4000000,
+        balance: 600000000,
+        managerName: 'Carlos Teste',
+        squadCount: 23,
+        fansCount: 1000000,
+        primaryColor: '#6366f1',
+        secondaryColor: '#4338ca',
+        boardExpectation: 'Consolidar projeto na primeira divisão',
+        seasonTarget: 'Primeira metade da tabela',
+        leaguePosition: 7,
+        trophiesCount: 1,
         foundedYear: 2024,
       },
     ];

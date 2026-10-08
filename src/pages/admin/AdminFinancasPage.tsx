@@ -3167,7 +3167,8 @@ export const AdminFinancasPage: React.FC = () => {
                 </span>
                 <ul className="text-slate-300 space-y-1 text-[11px] list-disc list-inside">
                   <li><strong className="text-emerald-400">balance: 600000000</strong> (Caixa Real de R$ 600.000.000,00)</li>
-                  <li>Gravado diretamente nos 10 documentos oficiais no Firestore via <code className="text-slate-400">updateDoc</code></li>
+                  <li><strong className="text-cyan-400">transferBudget: 600000000</strong> (Sincronizado para R$ 600.000.000,00)</li>
+                  <li>Gravado diretamente nos documentos oficiais no Firestore via <code className="text-slate-400">updateDoc</code></li>
                   <li>Executado com a sessão Firebase Auth ativa do Administrador (<span className="text-white font-mono">{firebaseEmail || 'vmseguroservico@gmail.com'}</span>)</li>
                 </ul>
               </div>
@@ -3177,10 +3178,9 @@ export const AdminFinancasPage: React.FC = () => {
                   O que NÃO SERÁ alterado (100% Preservado):
                 </span>
                 <ul className="text-slate-300 space-y-1 text-[11px] list-disc list-inside">
-                  <li><strong className="text-cyan-400">transferBudget</strong> permanece intocado</li>
-                  <li><strong className="text-amber-400">reservedTransferBudget</strong> permanece intocado (ex.: Ninja FC R$ 1.700.000)</li>
-                  <li><strong className="text-slate-400">wageBudget / plantéis / 1.340 leilões</strong> intactos</li>
-                  <li>Nenhum lançamento de receita, despesa ou transferência gerado</li>
+                  <li><strong className="text-amber-400">reservedTransferBudget</strong> permanece intocado com reservas de lances existentes</li>
+                  <li><strong className="text-slate-400">wageBudget / estádios / elencos / leilões / lances</strong> intactos</li>
+                  <li>Nenhum lançamento contábil duplicado ou alteração de regras esportivas</li>
                 </ul>
               </div>
             </div>
@@ -3196,7 +3196,7 @@ export const AdminFinancasPage: React.FC = () => {
                   className="w-4 h-4 rounded text-emerald-600 focus:ring-emerald-500 bg-slate-900 border-slate-700 cursor-pointer"
                 />
                 <span className="text-xs text-slate-300 font-medium">
-                  Confirmo que sou o Administrador autenticado (<span className="text-white font-mono">{firebaseEmail || 'vmseguroservico@gmail.com'}</span>) e autorizo a definição do Caixa Real dos 10 clubes para R$ 600.000.000 no Firestore.
+                  Confirmo que sou o Administrador autenticado (<span className="text-white font-mono">{firebaseEmail || 'vmseguroservico@gmail.com'}</span>) e autorizo a padronização do Caixa Oficial e Orçamento dos clubes para R$ 600.000.000 no Firestore.
                 </span>
               </label>
             )}

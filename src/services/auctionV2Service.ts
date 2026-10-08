@@ -138,9 +138,9 @@ export const auctionV2Service = {
     const cleanClubId = clubId.trim();
     const db = this.getDb();
 
-    // 1. Obtém dados reais do clube
+    // 1. Obtém dados reais do clube - Caixa oficial (balance) é a fonte principal
     const club = await clubesService.getById(cleanClubId);
-    const totalBudget = Number(club?.transferBudget) || Number(club?.balance) || 0;
+    const totalBudget = Number(club?.balance ?? club?.transferBudget ?? 600000000);
 
     // 2. Consulta reservas ativas em /auctionV2Reservations
     let reservedBudget = 0;

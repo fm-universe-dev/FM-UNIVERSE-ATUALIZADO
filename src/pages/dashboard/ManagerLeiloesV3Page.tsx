@@ -67,9 +67,9 @@ export const ManagerLeiloesV3Page: React.FC = () => {
             ...(managedClub || {}),
             ...cloudData,
             id: snap.id,
-            balance: Number(cloudData.balance ?? managedClub?.balance ?? 0),
+            balance: Number(cloudData.balance ?? managedClub?.balance ?? 600000000),
             reservedTransferBudget: Number(cloudData.reservedTransferBudget ?? 0),
-            transferBudget: Number(cloudData.transferBudget ?? managedClub?.transferBudget ?? 0),
+            transferBudget: Number(cloudData.transferBudget ?? cloudData.balance ?? managedClub?.transferBudget ?? 600000000),
           } as Club;
           setClubeAtualizado(updated);
           try {
@@ -102,9 +102,9 @@ export const ManagerLeiloesV3Page: React.FC = () => {
             ...(prev || managedClub || {}),
             ...cloudData,
             id: snap.id,
-            balance: Number(cloudData.balance ?? prev?.balance ?? 0),
+            balance: Number(cloudData.balance ?? prev?.balance ?? 600000000),
             reservedTransferBudget: Number(cloudData.reservedTransferBudget ?? 0),
-            transferBudget: Number(cloudData.transferBudget ?? prev?.transferBudget ?? 0),
+            transferBudget: Number(cloudData.transferBudget ?? cloudData.balance ?? prev?.transferBudget ?? 600000000),
           } as Club));
         }
       },
@@ -499,8 +499,8 @@ export const ManagerLeiloesV3Page: React.FC = () => {
       minIncrement: Number(leilaoAtivo.minIncrement) || 0,
       highestBid: highestBidInModal,
       prevLeaderClubId: prevLeaderClubIdInModal,
-      clubBalance: Number(clubeExibido?.balance ?? 0),
-      clubTransferBudget: Number(clubeExibido?.balance ?? 0),
+      clubBalance: Number(clubeExibido?.balance ?? 600000000),
+      clubTransferBudget: Number(clubeExibido?.balance ?? 600000000),
       clubReservedBudget: Number(clubeExibido?.reservedTransferBudget ?? 0),
     });
 
